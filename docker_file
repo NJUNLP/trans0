@@ -1,0 +1,82 @@
+FROM hub.byted.org/base/lab.cuda:py311_cu122
+
+ENV http_proxy="http://sys-proxy-rd-relay.byted.org:8118"
+ENV https_proxy="http://sys-proxy-rd-relay.byted.org:8118"
+ENV no_proxy="byted.org"
+
+RUN wget https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda-repo-debian11-12-1-local_12.1.0-530.30.02-1_amd64.deb \
+    && sudo dpkg -i cuda-repo-debian11-12-1-local_12.1.0-530.30.02-1_amd64.deb \
+    && sudo cp /var/cuda-repo-debian11-12-1-local/cuda-*-keyring.gpg /usr/share/keyrings/ \
+    && sudo add-apt-repository contrib \
+    && sudo apt-get update \
+    && sudo apt-get install -y cuda-compat-12-1 \
+    && sudo apt-get -y install cuda-toolkit-12-1 \
+    && sudo apt --fix-broken install
+
+# 设置CUDA环境变量
+ENV CUDA_HOME=/usr/local/cuda-12.1
+ENV PATH=$CUDA_HOME/bin:$PATH
+ENV LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+RUN apt-get update
+RUN apt-get install -y \
+    tree \
+    ffmpeg \
+    zip \
+    tmux \
+    htop \
+    net-tools \
+    numactl \
+    libgl1-mesa-glx \
+    krb5-user \
+    ethtool \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    default-jre \
+    libaio-dev \
+    libnccl2 \
+    libnccl-dev \
+    libibverbs1 \
+    ibverbs-providers
+
+ENV SKIP_MERLIN_OFFICIAL_INTERNAL_INSTALL=true
+RUN pip3 --timeout=600 install --upgrade pip
+RUN pip3 install --no-cache-dir packaging loguru nltk einops
+RUN pip3 install "torch"  --no-cache-dir --upgrade -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip3 install "vllm" --no-cache-dir --upgrade -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip3 install "transformers==4.43.1" --no-cache-dir --upgrade -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip3 install "datasets>=2.14.3" --no-cache-dir
+RUN pip3 install "accelerate>=0.27.2" --no-cache-dir
+RUN pip3 install "peft>=0.9.0" --no-cache-dir
+RUN pip3 install "trl>=0.8.1" --no-cache-dir
+RUN pip3 install "gradio>=3.38.0,<4.0.0" --no-cache-dir
+RUN pip3 install --no-cache-dir sentencepiece \
+    openai==1.23.1 \
+    ray[default]==2.12.0 \
+    fastapi \
+    sse-starlette \
+    uvicorn \
+    seaborn \
+    pydantic \
+    matplotlib \
+    deepspeed==0.14.4 \
+    fire \
+    validators \
+    huggingface_hub \
+    nvitop\
+    huggingface_hub \
+    prettytable \
+    sacrebleu \
+    unbabel-comet\
+    bitsandbytes \
+    plotly \
+    kaleido \
+    isort \
+    mtdata \
+    jsonlines
+RUN pip3 install protobuf==3.20.3 gpustat tf-keras evaluate flash-attn
+RUN pip3 --timeout=600 install byted-wandb
+RUN git clone https://github.com/google-research/bleurt.git \
+    && cd bleurt \
+    && pip install .
+RUN pip3 install git+https://github.com/lucadiliello/bleurt-pytorch.git

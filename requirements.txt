@@ -1,0 +1,46 @@
+# torch == 2.3.1+cu121
+# torchvision==0.18.1
+# torchaudio == 2.3.1
+xformers == 0.0.27
+# pytorch-cuda == 12.1
+transformers == 4.43.1
+datasets
+accelerate
+peft
+trl
+gradio
+sentencepiece
+openai
+# ray-default >= 2.9
+ray[default]
+fastapi
+sse-starlette
+uvicorn
+seaborn
+pydantic
+matplotlib
+deepspeed
+fire
+validators
+huggingface_hub
+prettytable
+sacrebleu
+bitsandbytes
+plotly
+# python-kaleido
+kaleido
+isort
+jsonlines
+protobuf
+gpustat
+tf-keras
+evaluate
+flash-attn == 2.6.1
+wandb
+pandas
+pytorch-lightning
+
+vllm == 0.5.3
+unbabel-comet
+git+https://github.com/lucadiliello/bleurt-pytorch.git
+git+https://github.com/google-research/bleurt.git
