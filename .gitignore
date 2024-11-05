@@ -1,0 +1,14 @@
+modules/__pycache__/*
+configs/__pycache__/*
+utils/__pycache__/*
+wandb/*
+log.out*
+debug_script.sh
+.vscode
+cache
+debug_test.sh
+bleurt/*
+*.log
+*.csv
+*.zip
+collect_data.py
