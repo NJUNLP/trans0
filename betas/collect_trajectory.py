@@ -1,5 +1,6 @@
-import random
 import math
+import random
+
 
 class MCTSNode:
     def __init__(self, state, parent=None):
@@ -33,9 +34,9 @@ class MonteCarloTreeSearch:
         for i in range(num_iterations):
             node = self.select()  # selection
             node.add_child(self.get_random_string(i))  # the expansion
-            result = self.simulate(node)  # simulation 
+            result = self.simulate(node)  # simulation
             self.backpropagate(node, result)    # backpropagation
-    
+
     def get_random_string(self, length):
         return  "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=length))
 
@@ -54,7 +55,7 @@ class MonteCarloTreeSearch:
         while node:
             node.update(result)
             node = node.parent
-    
+
     def layer_traversal(self):
         results=[]
         q = [self.root]
@@ -63,7 +64,7 @@ class MonteCarloTreeSearch:
             results.append({"state":node.state,"visits":node.visits,"wins":node.wins})
             q.extend(node.children)
         return results
-    
+
     def get_depth(self, node):
         if len(node.children) ==0:
             return 1
@@ -73,9 +74,9 @@ class MonteCarloTreeSearch:
 if __name__ == "__main__":
     initial_state = "start"
     mcts = MonteCarloTreeSearch(initial_state)
-    
+
     mcts.search(50)  # 执行1000次搜索迭代
-    
+
     print("遍历结果：", mcts.layer_traversal())
     # for child in mcts.root.children:
     #     print(f"状态: {child.state}, 访问次数: {child.visits}, 胜利次数: {child.wins}")

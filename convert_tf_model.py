@@ -1,13 +1,16 @@
+import sys
+
 import bleurt
 from bleurt import score as bleurt_score
 from bleurt.lib.tokenizers import create_tokenizer
-import sys
-sys.argv = sys.argv[:1] 
-import transformers
+
+sys.argv = sys.argv[:1]
+import json
+
 import tensorflow.compat.v1 as tf
 import torch
 import torch.nn as nn
-import json
+import transformers
 
 references = ["a bird chirps by the window"]
 candidates = ["a bird chirps by the window"]
@@ -45,11 +48,14 @@ class BleurtModel(nn.Module):
         self.config = config
         self.bert = transformers.RemBertModel(config)
         self.dense = nn.Linear(config.hidden_size,1)
-    
+
     def forward(self, input_ids, input_mask, segment_ids):
-        cls_state = self.bert(input_ids, input_mask, 
-                            #   segment_ids)[0][:,0]#[1] doesnt work either
-                              segment_ids).pooler_output # this is fix #2 - taking pooler output
+        cls_state = self.bert(
+            input_ids,
+            input_mask,
+            #   segment_ids)[0][:,0]#[1] doesnt work either
+            segment_ids,
+        ).pooler_output  # this is fix #2 - taking pooler output
         return self.dense(cls_state)
 
 config = transformers.RemBertConfig()

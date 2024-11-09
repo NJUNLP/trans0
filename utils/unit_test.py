@@ -1,14 +1,19 @@
-from modules.agent import TransAgent
-import time, os, glob
+import glob
 import json
+import os
+import time
 from collections import OrderedDict
+
 import numpy as np
-import pyarrow as pa
-from modules.data import read_parallel_data
-from datasets import Dataset
 import pandas as pd
+import pyarrow as pa
 import torch.distributed as dist
+from datasets import Dataset
+
+from modules.agent import TransAgent
+from modules.data import read_parallel_data
 from utils.common_utils import free_gpu
+
 
 def RL_update(args, train_round:int):
     agent = TransAgent(args, train=train_round)
@@ -18,7 +23,7 @@ def RL_update(args, train_round:int):
     merged_df = pd.read_csv(cached_SP_dir)
     tuning_dataset = Dataset(pa.Table.from_pandas(merged_df))
     print("loading RL finetune data.")
-    agent.update_policy(tuning_dataset) 
+    agent.update_policy(tuning_dataset)
     end = time.time()
 
     del agent, tuning_dataset, merged_df
@@ -29,7 +34,7 @@ def RL_update(args, train_round:int):
 def unit_test(args):
     """
     input the parallel data, calculate the MC values, with generation scores
-    yidl to parquet lists 
+    yidl to parquet lists
     """
     # src_list, trg_list = read_parallel_data(args.dev_data_path, src_lang_code = "zh", trg_lang_code = "en")
     input_line = "最低的和惟一必要的工资额就是工人在劳动期间的生活费用，再加上使工人能够养家糊口并使工人种族不致死绝的费用。"
@@ -43,8 +48,10 @@ def unit_test(args):
     input_line="黄河之水天上来，落霞与孤鹜齐飞，秋水共长天一色"
     agent = TransAgent(args)
     mc_tree = agent.MCTS(
-        src_sent=input_line, 
-        src_lang_code="zh", trg_lang_code="en", max_simulation_depth=3
+        src_sent=input_line,
+        src_lang_code="zh",
+        trg_lang_code="en",
+        max_simulation_depth=3,
     )
     item_list = mc_tree.layer_traversal(value_type="utility")
     root_data, root_value = item_list.pop(0)
@@ -66,7 +73,6 @@ def unit_test(args):
     #     RL_update(args, train_round=i)
     #     input()
 
-
     # df = pd.DataFrame(results)
     # df.to_csv(args.dev_data_path.split("/")[-1]+".log", index=False)
-    return 
+    return

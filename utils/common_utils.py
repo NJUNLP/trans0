@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
-import torch, gc,random, copy, os
+import copy
+import gc
+import os
+import random
+
 import numpy as np
+import torch
 
 IGNORE_INDEX=-100
 
@@ -17,7 +22,7 @@ def print_once(message):
             print(message, flush=True)
     else:
         print(message, flush=True)
-        
+
 def free_gpu():
     gc.collect()
     torch.cuda.empty_cache() # release torch objects
@@ -39,7 +44,7 @@ def set_special_tokens(model, tokenizer, show_info=False):
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.bos_token_id = tokenizer.bos_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
-    
+
     if show_info:
         print_once(tokenizer)
 
@@ -49,20 +54,20 @@ def compute_loglikelihood(logits, labels):
     """ compute the loglikelihood
     """
     batch_size, seq_length, vocab_size = logits.shape
-    
+
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
-    
+
     # Flatten the tokens
     loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
     shift_logits = shift_logits.view(-1, vocab_size)
     shift_labels = shift_labels.view(-1)
-    
+
     # Enable model parallelism
     shift_labels = shift_labels.to(shift_logits.device)
     loss = loss_fct(shift_logits, shift_labels).reshape(batch_size, -1) # [bs * seq_len]
     ignore_mask = labels != IGNORE_INDEX
-    
+
     avg_loss = loss.sum(dim=-1) / ignore_mask.sum(dim=-1)
 
     return - avg_loss
@@ -113,7 +118,7 @@ def get_ranks(number_array):
     rank = np.zeros_like(ascending_index)
     for r in range(len(ascending_index)):
         rank[ascending_index[r]] = r
-    return rank        
+    return rank
 
 def truncate_encoded(inputs, max_length=500):
     """
@@ -126,5 +131,4 @@ def truncate_encoded(inputs, max_length=500):
                   "token_type_ids":inputs["token_type_ids"][:, :max_length],
                   "attention_mask":inputs["attention_mask"][:, :max_length]
                  }
-    return trunc_inputs   
-
+    return trunc_inputs

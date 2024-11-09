@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-import os, json
+import json
+import os
+import random
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-import random
-
+from bleurt_pytorch import BleurtForSequenceClassification, BleurtTokenizer
 from datasets import load_dataset
+
 from configs.prompts import TRANS_PROMPT
-from bleurt_pytorch import BleurtTokenizer, BleurtForSequenceClassification
 
 base_data_path = "/mnt/bn/v2024/dataset/nist_zh-en/"
 
@@ -61,7 +63,8 @@ def generate_alpaca_test_data(data_path):
         json.dump(data, out_file, ensure_ascii=False, indent=2)
     return os.path.join(base_data_path, data_path+".json")
 
-def generate_parquet_data(src_file, src_lan_code, trg_file, trg_lan_code, output_file):  
+
+def generate_parquet_data(src_file, src_lan_code, trg_file, trg_lan_code, output_file):
     # read the parallel files
     # extract the schema from a parquet file
     # yield according to schema
@@ -79,18 +82,19 @@ def generate_parquet_data(src_file, src_lan_code, trg_file, trg_lan_code, output
         # pq.write_table(out_table, output_file)
     return
 
+
 def process_flores_data(flores_script, output_file, sample_size=-1):
     """
     process the multilingual parallel data to parallel lines.
     exclude some language pairs during translation
-    :param flores_script: a .py file that defines flores GeneratorBasedBuilder 
-    :param output_file: for the processed parallel in json 
+    :param flores_script: a .py file that defines flores GeneratorBasedBuilder
+    :param output_file: for the processed parallel in json
     :param sample_size: the size of the dataset, -1 for full data.
     flores200 adopts the ISO2 language codes
     run by: process_flores_data("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
 
     """
-    # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # , 
+    # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # ,
     lang_codes = ["eng_Latn", "fra_Latn", "zho_Hans", "deu_Latn", "rus_Cyrl", "kor_Hang", "jpn_Jpan", "arb_Arab", "heb_Hebr", "swh_Latn"]
     # flores_data = load_dataset(flores_script, "all")["dev"]  # load all languages
     clense_pair = ["eng_Latn", "zho_Hans"]
@@ -116,8 +120,8 @@ def process_flores_data(flores_script, output_file, sample_size=-1):
     print(">> total >>", len(full_data))
     df = pd.DataFrame({"translation": full_data})
     df.to_parquet(output_file, index=False)
-    return 
-    
+    return
+
 def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file="flores_test"):
     """
     extract the flores200 test data to parallel lines.
@@ -129,7 +133,7 @@ def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file
 
     run by: process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "eng_Latn","zho_Hans")
 
-    pair_code: with dash line '-' 
+    pair_code: with dash line '-'
     """
     # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # ,
     para_data = []

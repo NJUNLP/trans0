@@ -1,5 +1,6 @@
 import torch.distributed as dist
 
+
 def print_one():
     print("return 1")
     dist.destroy_process_group()
@@ -17,4 +18,3 @@ def test():
 
 if __name__=="__main__":
     test()
-    

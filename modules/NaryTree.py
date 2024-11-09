@@ -3,20 +3,22 @@ import numpy as np
 
 from configs.lang_codes import LangCodes
 
+
 # serving for MCTS results
 class Node:
-    def __init__(self, state:dict, parent=None): 
+
+    def __init__(self, state: dict, parent=None):
         """
-        initiate a node with data with parent pointer 
+        initiate a node with data with parent pointer
         state = {data:, lang_code:, recon: }
         the lang_code for recon can be tracked by parent's lang_code
         """
         assert "data" in state, "data is required in state"
         assert "lang_code" in state, "lang_code is required in state"
         assert "recon" in state, "recon is required in state"
-        self.state = state  
+        self.state = state
         # the node record for backpropagation, root parent is None
-        self.parent = parent 
+        self.parent = parent
         # list of children
         self.children = []
         self.value = 0  # win counts for exploration selection
@@ -26,10 +28,10 @@ class Node:
         node = Node(state, parent=self)
         self.children.append(node)
         return node
-    
+
     def update(self, value):  # update by the visit (explore) results
         self.visit += 1
-        self.value += value 
+        self.value += value
 
     def get_uct_value(self):
         """
@@ -43,8 +45,8 @@ class Node:
             explore = 2.0* (2 * np.log(self.visit) / self.visit) ** 0.5
         else:
             explore = 2.0* (2 * np.log(self.parent.visit) / self.visit) ** 0.5
-        return exploit + explore 
-    
+        return exploit + explore
+
     def get_best_child(self):
         # return the child with best utc value to expand
         best_child = max(self.children, key=lambda child:child.get_uct_value())
@@ -60,11 +62,11 @@ class NaryTree:
             best_child = current_node.get_best_child()
             current_node = best_child
         return current_node
-    
+
     def get_best(self, node):  # retrieve the node with best exploit (value/visit)
         if len(node.children) ==0:
             return node
-        
+
         max_value = node.value/node.visit
         max_node = node
         for child in node.children:
@@ -83,15 +85,15 @@ class NaryTree:
     def add_child(self, parent, child_data):
         """
         expand the parent node with new child, and return the child node
-        """        
+        """
         child = Node(state=child_data, parent=parent)
         parent.children.append(child)
         return child
-            
+
     def preorder_traversal(self, node=None, value_type="utility"):  # collect all data by preorder_traversal
         if node is None:
             node = self.root
-        
+
         results = []
         if value_type =="utility":
             value = node.value/node.visit
@@ -105,12 +107,12 @@ class NaryTree:
         for child in node.children:
             results.extend(self.preorder_traversal(child))
         return results
-    
+
     def postorder_traversal(self, node=None, value_type="utility"):  # for value estimation training from leaves.
         assert value_type in ["utility", "value", "visit", "uct"], "mcts traversal value type must be in utility, visit, or uct"
         if node is None:
             node = self.root
-        # return type as key or 
+        # return type as key or
         results = []
         for child in node.children:
             results.extend(self.postorder_traversal(child))
@@ -130,7 +132,7 @@ class NaryTree:
         if node is None:
             node = self.root
         results = []
-        
+
         q = [node]
         while q:
             item_to_read = q.pop()
@@ -146,4 +148,3 @@ class NaryTree:
 
             q.extend(item_to_read.children)
         return results
-    

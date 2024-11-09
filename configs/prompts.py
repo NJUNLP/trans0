@@ -25,9 +25,9 @@ SIM_SENT_PROMPT = "please generate a similar sentence:"
 LABEL_MARK = "<LABEL>"
 
 # translate with examplars (translation history)
-TRANS_CONTEXT_PROMPT =  [
+TRANS_CONTEXT_PROMPT = [
     "<src_lan>: <word_pair_src> = <trg_lan>: <word_pair_trg>\n",
-    "For example, <src_lan>: <word_pair_src> = <trg_lan>: <word_pair_trg>\n", 
+    "For example, <src_lan>: <word_pair_src> = <trg_lan>: <word_pair_trg>\n",
 ]
 
 # generate parallel data as example in context. Generation sentence pairs are arranged in Json format

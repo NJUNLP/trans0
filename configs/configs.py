@@ -1,16 +1,18 @@
+from dataclasses import dataclass, field
 from typing import List, Optional
 
-from dataclasses import dataclass, field
-from transformers import TrainingArguments
 from peft import LoraConfig
+from transformers import TrainingArguments
 
 nas_path = "/mnt/bn/v2024/"
 
 peft_config = LoraConfig(
-    r=64, lora_alpha=128,    
-    lora_dropout=0.05, bias="none", 
+    r=64,
+    lora_alpha=128,
+    lora_dropout=0.05,
+    bias="none",
     task_type="CAUSAL_LM",
-    target_modules = ["q_proj","v_proj", "o_proj"],
+    target_modules=["q_proj", "v_proj", "o_proj"],
 )
 
 sp_peft_config = LoraConfig(
@@ -20,8 +22,9 @@ sp_peft_config = LoraConfig(
     target_modules = "all-linear" #["q_proj","v_proj", "o_proj"],
 )
 
+
 @dataclass
-class DefaultTrainingArguments(TrainingArguments): 
+class DefaultTrainingArguments(TrainingArguments):
     # tokenizer and data params
     train_data_path: str = field(
         default="dataset/nist_zh-en/json/",
@@ -33,20 +36,18 @@ class DefaultTrainingArguments(TrainingArguments):
     test_data_path:  Optional[str] = field(
         default=None, metadata={"help": "test inputs for mode test"}
     )
-    
+
     flores_script: Optional[str] = field(
         default=None, metadata={"help": "multilingual /monolingual inputs"}
     )
 
     nas_base_path: str = field(
-        default=nas_path,  
-        metadata={"help": "the base nas path for default paths"}
+        default=nas_path, metadata={"help": "the base nas path for default paths"}
     )
 
     max_length: int = field(
-        default=2048,
-        metadata={"help": "the max sentence sequence length."}
-    )   
+        default=2048, metadata={"help": "the max sentence sequence length."}
+    )
     padding_side: str = field(
         default="left",
         metadata={"help": "the side for tokenizer to add padding tokens."}
@@ -73,8 +74,7 @@ class DefaultTrainingArguments(TrainingArguments):
         metadata={"help": "the pooling for MC value estimation, selected from [average, max, last]."}
     )
     llm_path: str = field(
-        default="models/huggingface/Llama-2-7b-hf", 
-        metadata={"help": "the LLM path."}
+        default="models/huggingface/Llama-2-7b-hf", metadata={"help": "the LLM path."}
     )
 
     # training hyperparams
@@ -96,16 +96,17 @@ class DefaultTrainingArguments(TrainingArguments):
     save_total_limit: float=field(default=2)
     num_train_epochs: int=field(default=1)
 
-    
     clip_range: float = field(default=0.2, metadata={"help": "the range to clip the importance reweighting ratio for policy optimization."})
     length_penalty: float = field(default=1., metadata={"help": "the penalty for seq length."})
-    lm_sft_coeff: float = field(default=0., metadata={"help": "the coefficient for SFT data language modeling loss."})            
+    lm_sft_coeff: float = field(
+        default=0.0,
+        metadata={"help": "the coefficient for SFT data language modeling loss."},
+    )
     lm_kl_coeff: float = field(default=0., metadata={"help": "the coefficient of kl regularizer."})
 
     per_device_train_batch_size: int = field(
-        default=2,
-        metadata={"help": "training batch on each device"}
-    )   
+        default=2, metadata={"help": "training batch on each device"}
+    )
     gradient_accumulation_steps: int = field(
         default=64,
         metadata={"help": "accumualate to simulate large batch"}
@@ -117,14 +118,12 @@ class DefaultTrainingArguments(TrainingArguments):
     )
 
     resume_from_checkpoint: Optional[str] = field(
-        default=None, 
-        metadata={"help":  "either training checkpoint or final adapter"}
+        default=None, metadata={"help": "either training checkpoint or final adapter"}
     )
     # generation parameters:
     max_new_tokens: int = field(
-        default=200,
-        metadata={"help": "the max length for sentence-level translation."}
-    )   
+        default=200, metadata={"help": "the max length for sentence-level translation."}
+    )
 
     # metric
     bleurt_ckpt: str = field(
@@ -133,9 +132,9 @@ class DefaultTrainingArguments(TrainingArguments):
     )
     comet_ckpt: str = field(
         default="models/Unbabel/wmt22-cometkiwi-da/checkpoints/model.ckpt",
-        metadata={"help":"default reference-free comet as suggested"} 
+        metadata={"help": "default reference-free comet as suggested"},
     )
-    
+
     mcts_sample_size: int = field(
         default=4,
         metadata={"help":"expansion size for MCTS"}

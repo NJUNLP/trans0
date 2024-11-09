@@ -3,10 +3,9 @@
 
 import os
 import sys
+from typing import List, Optional, Union
+
 import datasets
-
-from typing import Union, List, Optional
-
 
 _CITATION = """
 @article{nllb2022,
@@ -30,15 +29,15 @@ _CITATION = """
 """
 
 _DESCRIPTION = """\
-The creation of FLORES-200 doubles the existing language coverage of FLORES-101. 
-Given the nature of the new languages, which have less standardization and require 
-more specialized professional translations, the verification process became more complex. 
-This required modifications to the translation workflow. FLORES-200 has several languages 
-which were not translated from English. Specifically, several languages were translated 
-from Spanish, French, Russian and Modern Standard Arabic. Moreover, FLORES-200 also 
-includes two script alternatives for four languages. FLORES-200 consists of translations 
-from 842 distinct web articles, totaling 3001 sentences. These sentences are divided 
-into three splits: dev, devtest, and test (hidden). On average, sentences are approximately 
+The creation of FLORES-200 doubles the existing language coverage of FLORES-101.
+Given the nature of the new languages, which have less standardization and require
+more specialized professional translations, the verification process became more complex.
+This required modifications to the translation workflow. FLORES-200 has several languages
+which were not translated from English. Specifically, several languages were translated
+from Spanish, French, Russian and Modern Standard Arabic. Moreover, FLORES-200 also
+includes two script alternatives for four languages. FLORES-200 consists of translations
+from 842 distinct web articles, totaling 3001 sentences. These sentences are divided
+into three splits: dev, devtest, and test (hidden). On average, sentences are approximately
 21 words long.
 """
 
@@ -89,6 +88,7 @@ _METADATA_PATHS = {
 }
 
 from itertools import permutations
+
 
 def _pairings(iterable, r=2):
     previous = tuple()
@@ -159,7 +159,7 @@ class Flores200(datasets.GeneratorBasedBuilder):
             license=_LICENSE,
             citation=_CITATION,
         )
-    
+
     def _split_generators(self, dl_manager):
         dl_dir = dl_manager.download_and_extract(_URL)
 
@@ -227,4 +227,3 @@ class Flores200(datasets.GeneratorBasedBuilder):
                         for lang in langs
                     }
                 }
-            
