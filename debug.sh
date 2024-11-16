@@ -9,7 +9,7 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3-debug" torchrun --master_addr $MET
     --output_dir /mnt/bn/v2024/ckpts/llama3-debug/ \
     --deepspeed configs/ds_z2_config.json  --use_lora False \
     --rl_loss_type sppo_hard \
-    --learning_rate 1e-4 \
+    --learning_rate 1e-3 \
     --rl_learning_rate 5e-6 \
     --report_to 'wandb' \
     --run_name 'llama3-debug' \
