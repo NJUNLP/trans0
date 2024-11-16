@@ -7,6 +7,7 @@ import random
 
 from datasets import load_dataset
 from configs.prompts import TRANS_PROMPT
+from configs.lang_codes import ISO2wFamily_ISO2codes
 from bleurt_pytorch import BleurtTokenizer, BleurtForSequenceClassification
 
 base_data_path = "/mnt/bn/v2024/dataset/nist_zh-en/"
@@ -96,7 +97,7 @@ def process_flores_data(flores_script, output_file, sample_size=-1):
     clense_pair = ["eng_Latn", "zho_Hans"]
     # clense_pair = []
     full_data = []
-    for i in range(len(lang_codes)):
+    for i in range(len(lang_codes)-1):
         src_lan_code = lang_codes[i]
         src_col =load_dataset(flores_script, src_lan_code, trust_remote_code=True)["dev"]["sentence"]
         for j in range(i+1, len(lang_codes)):
@@ -115,8 +116,39 @@ def process_flores_data(flores_script, output_file, sample_size=-1):
                     full_data.append({src_lan_code:src_l.strip(), trg_lan_code:trg_l.strip()})
     print(">> total >>", len(full_data))
     df = pd.DataFrame({"translation": full_data})
-    df.to_parquet(output_file, index=False)
+    df.to_json(output_file, orient='records', lines=True)
     return 
+
+def process_flores_instruct(flores_script, output_file, sample_size=-1):
+    all_data= load_dataset(flores_script, "all", trust_remote_code=True)["dev"]
+    flores_colums = all_data.column_names
+    supported_lang_code = list(ISO2wFamily_ISO2codes.keys())
+    data_size = len(all_data["sentence_eng_Latn"]) 
+
+    full_data = []
+    data_count=0
+    for i in range(len(supported_lang_code)-1):
+        src_lang_code = supported_lang_code[i]
+        if f"sentence_{src_lang_code}" in flores_colums:
+            for j in range(i+1, len(supported_lang_code)):
+                trg_lang_code=supported_lang_code[j]
+                if f"sentence_{trg_lang_code}" in flores_colums:
+                    sample_index = random.randint(0, data_size-1)
+                    src_l = all_data[f"sentence_{src_lang_code}"][sample_index]
+                    trg_l = all_data[f"sentence_{trg_lang_code}"][sample_index]
+                    full_data.append({src_lang_code: src_l.strip(), trg_lang_code: trg_l.strip()})
+                    data_count+=1
+                    if sample_size>0 and data_count>sample_size:
+                            break
+    print(">> total >>", len(full_data))
+    for i in range(len(full_data)):
+        if len(full_data[i].keys())!=2:
+            print("error")
+    df = pd.DataFrame({"translation": full_data})
+    table = pa.Table.from_pandas(df)
+    pq.write_table(table, output_file)
+    # df.to_parquet(output_file, index=False)              
+    return
     
 def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file="flores_test"):
     """
@@ -132,6 +164,7 @@ def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file
     pair_code: with dash line '-' 
     """
     # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # ,
+    print(f"collect flores test on {src_lang_code} with {trg_lang_code}...")
     para_data = []
     lan_pair = load_dataset(flores_script, f"{src_lang_code}-{trg_lang_code}" )["devtest"]
     for i in range(len(lan_pair)):
@@ -140,6 +173,7 @@ def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file
         )
     df = pd.DataFrame({"translation": para_data})
     df.to_parquet(f"{output_file}_{src_lang_code}-{trg_lang_code}.parquet", index=False)
+    print(f"finsh at {output_file}_{src_lang_code}-{trg_lang_code}.parquet")
     return
 
 def sample_parquet_data(parquet_file, sample_size):
@@ -155,8 +189,9 @@ def sample_parquet_data(parquet_file, sample_size):
 # )
 # alpaca_data_path=generate_alpaca_data("/mnt/bn/v2024/dataset/nist_zh-en/")
 # alpaca_test_path = generate_alpaca_test_data("/mnt/bn/v2024/dataset/nist_zh-en/test/mt08.src")
-process_flores_data("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet", sample_size=-1)
-# process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "eng_Latn","zho_Hans")
+# process_flores_data("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet", sample_size=-1)
+process_flores_instruct("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
+# process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "zho_Hans","arb_Arab")
 
 def calculate_bleurt(ref_list, cand_list):
     bleurt_path="/mnt/bn/v2024/models/huggingface/bleurt20/"
@@ -186,4 +221,4 @@ def merge_mono_data(dir="/mnt/bn/v2024/dataset/monolingual/rus_Cyrl"):
         for l in news_lines:
             out_file.write(l+"\n")
 
-merge_mono_data("/mnt/bn/v2024/dataset/monolingual/eng_Latn")
+# merge_mono_data("/mnt/bn/v2024/dataset/monolingual/zho_Hans")

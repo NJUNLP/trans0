@@ -11,4 +11,5 @@ bleurt/*
 *.log
 *.csv
 *.zip
+*.DS_Store
 collect_data.py

@@ -42,5 +42,6 @@ pytorch-lightning
 
 vllm == 0.5.3
 unbabel-comet
+lingua-language-detector
 git+https://github.com/lucadiliello/bleurt-pytorch.git
 git+https://github.com/google-research/bleurt.git

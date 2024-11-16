@@ -1,8 +1,8 @@
 WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3-debug" torchrun --master_addr $METIS_WORKER_0_HOST --nproc_per_node $NUM_GPU --master_port $WORKER_0_PORT --node_rank $ARNOLD_ID --nnodes $ARNOLD_WORKER_NUM main.py \
     --mode RL  --mcts_sample_size 5 \
     --llm_path models/huggingface/Llama-3.1-8b/  \
-    --train_data_path dataset/flores200_dataset/sample_40k/ \
-    --dev_data_path dataset/flores200_dataset/test/flores_test_zho_Hans-eng_Latn.parquet \
+    --train_data_path dataset/flores200_dataset/sample_5k/ \
+    --dev_data_path dataset/flores200_dataset/test/flores_test_eng_Latn-arb_Arab.parquet \
     --nas_base_path /mnt/bn/v2024/  \
     --cache_dir cache/llama3-debug/ \
     --flores_script "flores200.py" \
@@ -14,6 +14,23 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3-debug" torchrun --master_addr $MET
     --report_to 'wandb' \
     --run_name 'llama3-debug' \
     --bf16 True --tf32 True  2>&1 |tee contine.log
+
+WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.2_3e-6" torchrun --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT  main.py \
+    --mode RL  --mcts_sample_size 10 \
+    --llm_path models/huggingface/Llama-3.2-3b/  \
+    --train_data_path dataset/flores200_dataset/sample_5k/ \
+    --dev_data_path dataset/flores200_dataset/test/flores_test_eng_Latn-arb_Arab.parquet \
+    --flores_script "flores200.py" \
+    --nas_base_path /mnt/bn/v2024yg/  \
+    --cache_dir cache/llama3.2_3e-6/ \
+    --output_dir /mnt/bn/v2024yg/ckpts/llama3.2_3e-6/ \
+    --deepspeed configs/ds_z2_config.json  --use_lora False \
+    --rl_loss_type sppo_hard \
+    --learning_rate 1e-3 \
+    --rl_learning_rate 3e-6 \
+    --run_name 'llama3.2_3e-6' \
+    --report_to 'wandb' \
+    --bf16 True --tf32 True
 
 torchrun --nproc_per_node=8 --master_port=8009 main.py \
     --mode valid --src_code eng_Latn --trg_code zho_Hans \

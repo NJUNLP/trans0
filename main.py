@@ -152,7 +152,7 @@ def validate(args, dir=None, global_step=None, src_lang_code="zh", trg_lang_code
             del bleurt_scorer, bleurt_tokenizer
             free_gpu()
 
-            comet_scorer = comet.load_from_checkpoint(get_path(args, args.comet_ckpt))
+            comet_scorer = comet.load_from_checkpoint(get_path(args, args.comet_ckpt), reload_hparams=True)
             data = []
             for src, mt in zip(input_list, processed_out_list):
                 data.append({"src":src, "mt": mt})
@@ -195,7 +195,7 @@ def self_play(args, train_round:int, trg_lang_code=["zho_Hans", "eng_Latn", "deu
     # agent.distributed_valued_by_mcts(src_list, src_lang_code=src_lang_code, trg_lang_code="en")
     agent_mct_df = []
     for line in src_list:
-        mc_tree = agent.MCTS(src_sent = line, src_lang_code=src_lang_code, trg_lang_code=lang_code)
+        mc_tree = agent.MCTS(src_sent=line.strip(), src_lang_code=src_lang_code, trg_lang_code=lang_code)
         agent_mct_df.append(agent.yield_tree2rank(mc_tree))
         # agent.valued_by_BLEUrt(src_list, trg_list, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code)  # for tuning
     local_df = pd.concat(agent_mct_df, ignore_index=True)
@@ -252,7 +252,6 @@ if __name__=="__main__":
         choices=['SFT', 'RL', "test", "valid", "air", "simulate"],
         help="SFT (imitation learning with KL div) or RL"
     )
-    parser.add_argument("--local-rank", type=str, default=0)
     parser.add_argument("--src_code", type=str, default="zh", help="indicate src language type for validation")
     parser.add_argument("--trg_code", type=str, default="en", help="indicate trg language type for validation")
     args = parser.parse_args()  # inject add_argument parts
@@ -289,17 +288,17 @@ if __name__=="__main__":
             wandb.define_metric("comet", step_metric="step")
         validate(
             args, global_step=0,
-            src_lang_code="eng_Latn", trg_lang_code="zho_Hans"
+            src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
         )
-        for train_round in range(20):
-            self_play(args, train_round)
+        for train_round in range(200):
+            self_play(args, train_round, trg_lang_code=["zho_Hans", "eng_Latn", "isl_Latn", "arb_Arab"])
             dist.barrier()
             RL_update(args, train_round)
             dist.barrier()
             validate(
                 args, dir=os.path.join(get_path(args,args.output_dir), "_RL"), 
                 global_step=train_round+1,
-                src_lang_code="eng_Latn", trg_lang_code="zho_Hans"
+                src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
             )
 
     elif args.mode== "simulate":

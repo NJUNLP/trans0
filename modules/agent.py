@@ -4,6 +4,7 @@ import numpy as np
 from typing import List, OrderedDict
 from pandas import DataFrame
 
+from lingua import LanguageDetectorBuilder
 from torch.utils.data import DataLoader
 from trl import CPOTrainer, CPOConfig, DPOConfig, DPOTrainer
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
@@ -29,6 +30,7 @@ class TransAgent:
         # initiate agent by SFTed LLM for translation.
         self.args = args  # reserve the parameters
         self.sample_size = args.mcts_sample_size if args.mcts_sample_size else 4  
+        self.language_detector = LanguageDetectorBuilder.from_all_languages().build()
         # agent's cache
         self.cache_dir = os.path.join(get_path(args, args.cache_dir), args.output_dir.split("/")[-1], "trans0_agent")
         self.train_count = train
@@ -262,7 +264,7 @@ class TransAgent:
         # the exploration includes the sampled inference by origin prompts and contexted prompts
         with torch.no_grad():
             # fast initiation:
-            mc_tree = NaryTree(state={"data":src_sent, "lang_code":src_lang_code, "recon": None})
+            mc_tree = NaryTree(state={"data":src_sent.strip(), "lang_code":src_lang_code, "recon": None})
             root_lang_code = mc_tree.root.state["lang_code"]
             explored_trgs, scores = self.step_explore(
                 llm, mc_tree.root.state["data"], src_lang_code=src_lang_code, trg_lang_code=trg_lang_code,
@@ -341,9 +343,18 @@ class TransAgent:
         """
         item_list = mc_tree.layer_traversal(value_type=value_type)
         root_data, root_value=item_list.pop(0)  # the root is valued 
-
+        desired_language = self.supported_langs.get_lang(mc_tree.root.children[0].state["lang_code"])
         cleaned_dict = OrderedDict()  # clear redundancy with mean values for each tree nodes
-        for item_data, item_value in item_list:
+        for item_data, item_value in item_list:  # check the item data's language code:
+            detect_code = self.language_detector.detect_language_of(item_data)
+            if detect_code is None:
+                detect_language = "Null_language"
+                print(">>>> item language not known:", item_data)
+            else:
+                detect_code.iso_code_639_1.name.lower()
+                detect_language = self.supported_langs.get_lang(detect_code)
+            if detect_language!=desired_language:
+                item_value = item_value/2
             if item_data not in cleaned_dict:
                 cleaned_dict[item_data] = [item_value]
             else:
