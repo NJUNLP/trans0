@@ -11,7 +11,13 @@ import copy, wandb
 from transformers import Trainer, AutoTokenizer, AutoModelForCausalLM
 from utils.common_utils import free_gpu, print_once, set_special_tokens, get_path
 from utils.unit_test import unit_test
-from modules.data import get_dataset, sft_data_collactor, read_json_or_jsonl_data, read_parallel_data
+from modules.data import (
+    get_dataset,
+    sft_data_collactor,
+    read_json_or_jsonl_data,
+    read_parallel_data,
+    build_multilingual_dataloader,
+)
 from datasets import Dataset, load_dataset
 from modules.inference import vllm_inference, distributed_inference, vllm_inference_onair
 from modules.agent import TransAgent
@@ -128,6 +134,7 @@ def validate(args, dir=None, global_step=None, src_lang_code="zh", trg_lang_code
     input_list, reference_list = read_parallel_data(
         data_path=get_path(args, args.dev_data_path), 
         src_lang_code=src_lang_code, trg_lang_code=trg_lang_code)
+
     merged_results = distributed_inference(args, dir, input_list, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, override_cache=True)
     if dist.get_rank()==0:  # cache the merged translation to .out file
         processed_out_list = []
@@ -169,26 +176,43 @@ def validate(args, dir=None, global_step=None, src_lang_code="zh", trg_lang_code
             del comet_scorer
     free_gpu()
     return
-        
 
-def self_play(args, train_round:int, trg_lang_code=["zho_Hans", "eng_Latn", "deu_Latn", "rus_Cyrl", "arb_Arab", "isl_Latn", "kor_Hang", "ita_Latn"]):
+
+def self_play(
+    args,
+    train_round: int,
+    trg_lang_codes=[
+        "zho_Hans",
+        "eng_Latn",
+        "deu_Latn",
+        "rus_Cyrl",
+        "arb_Arab",
+        "isl_Latn",
+        "kor_Hang",
+        "ita_Latn",
+    ],
+):
     """
     collect the preference data via self-play on specific lang_pair, data is cached as csv
     the default trg_lang is english
     src_lang_code is a list of lang_codes 
     """
-    random.seed(int(time.time())+dist.get_rank())
-    src_lang_code=random.choice(trg_lang_code)
-    lang_pool = copy.deepcopy(trg_lang_code)
-    lang_pool.remove(src_lang_code)
-    lang_code = lang_pool[dist.get_rank()%len(lang_pool)] #+train_round%len(trg_lang_code)
-    print(f">>>> {dist.get_rank()} agent for {src_lang_code}-{lang_code}")
-    # read source data from flores dataset by specific language code
-    # assert args.flores_script, "provide flores script for monolingual data"
-    # src_list = random.sample(load_dataset(args.flores_script, src_lang_code, trust_remote_code=True)["dev"]["sentence"],10)
-    with open(os.path.join(args.nas_base_path,"dataset/monolingual", f"{src_lang_code}/merged.txt"),"r") as in_file:
-        lines = in_file.readlines()
-    src_list = random.sample(lines, 10)
+
+    def get_dataloader_for_round():
+        node_rank = dist.get_rank()
+        lang_idx = (train_round + node_rank) % len(trg_lang_codes)
+        lang = trg_lang_codes[lang_idx]
+        dataloader = multilingual_dataloader[lang]
+        sampler = dataloader.sampler
+        if sampler is not None:
+            sampler.set_epoch(train_round)
+        return dataloader, lang
+
+    lang_dataloader, src_lang_code = get_dataloader_for_round()
+    lang_code = random.choice([l for l in trg_lang_codes if l != src_lang_code])
+    for batch in lang_dataloader:
+        src_list = batch
+        break
 
     # initialize the translation agent for self-play data collection
     agent = TransAgent(args)  # initiate a MC agent with auto mapping(distributed) to generate data. # requires the training data path 
@@ -199,7 +223,12 @@ def self_play(args, train_round:int, trg_lang_code=["zho_Hans", "eng_Latn", "deu
         agent_mct_df.append(agent.yield_tree2rank(mc_tree))
         # agent.valued_by_BLEUrt(src_list, trg_list, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code)  # for tuning
     local_df = pd.concat(agent_mct_df, ignore_index=True)
-    local_df.to_csv(os.path.join(agent.cache_dir, f"{src_lang_code}-{lang_code}.{dist.get_rank()}.self_play_{str(train_round)}.csv"), index=False)
+    save_path = os.path.join(
+        agent.cache_dir,
+        f"{src_lang_code}-{lang_code}.{dist.get_rank()}.self_play_{str(train_round)}.csv",
+    )
+    local_df.to_csv(save_path, index=False)
+
     dist.barrier()
     if dist.get_rank()==0:
         collected_df = []
@@ -211,21 +240,28 @@ def self_play(args, train_round:int, trg_lang_code=["zho_Hans", "eng_Latn", "deu
                 in_line = distributed_df.at[i, 'prompt']
                 src_code = distributed_df.at[i, 'src_lang_code']
                 trg_code = distributed_df.at[i, 'trg_lang_code']
-                distributed_df.at[i,"prompt"] = translate_prompt.replace("<src_lan>", agent.supported_langs.get_lang(src_code)).replace("<trg_lan>",agent.supported_langs.get_lang(trg_code)).replace("<src_sent>", in_line) 
+                distributed_df.at[i, "prompt"] = (
+                    translate_prompt.replace(
+                        "<src_lan>", agent.supported_langs.get_lang(src_code)
+                    )
+                    .replace("<trg_lan>", agent.supported_langs.get_lang(trg_code))
+                    .replace("<src_sent>", in_line)
+                )
             collected_df.append(distributed_df)
         merged = pd.concat(collected_df, ignore_index=True)
         merged = merged.drop_duplicates().dropna()
         merged.reset_index(drop=True, inplace=True)
         time_stamp = datetime.datetime.now().strftime("%Y-%m-%d")
-        merged.to_csv(
-            os.path.join(agent.cache_dir, f"self_play_{str(train_round)}.{time_stamp}.csv"),
-            index=False
+        merge_fpath = os.path.join(
+            agent.cache_dir, f"self_play_{str(train_round)}.{time_stamp}.csv"
         )
+        merged.to_csv(merge_fpath, index=False)
     del agent, src_list, local_df
     for item in agent_mct_df:
         del item
     free_gpu()
     return
+
 
 def RL_update(args, train_round:int):
     agent = TransAgent(args, train=train_round)  # initiate a MC agent for update # requires the training data path 
@@ -287,18 +323,24 @@ if __name__=="__main__":
             wandb.define_metric("bleurt", step_metric="step")
             wandb.define_metric("comet", step_metric="step")
         validate(
-            args, global_step=0,
-            src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
+            args, global_step=0, src_lang_code="eng_Latn", trg_lang_code="zho_Hans"
+        )
+        trg_lang_codes = ["zho_Hans", "eng_Latn", "isl_Latn", "arb_Arab"]
+        global multilingual_dataloader
+        multilingual_dataloader = build_multilingual_dataloader(
+            trg_lang_codes, args.nas_base_path, batch_size=10
         )
         for train_round in range(200):
-            self_play(args, train_round, trg_lang_code=["zho_Hans", "eng_Latn", "isl_Latn", "arb_Arab"])
+            self_play(args, train_round, trg_lang_codes=trg_lang_codes)
             dist.barrier()
             RL_update(args, train_round)
             dist.barrier()
             validate(
-                args, dir=os.path.join(get_path(args,args.output_dir), "_RL"), 
-                global_step=train_round+1,
-                src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
+                args,
+                dir=os.path.join(get_path(args, args.output_dir), "_RL"),
+                global_step=train_round + 1,
+                src_lang_code="eng_Latn",
+                trg_lang_code="arb_Arab",
             )
 
     elif args.mode== "simulate":
@@ -306,5 +348,3 @@ if __name__=="__main__":
         unit_test(args)
     else:
         print(">>> undefined mode, exit")
-        
-        

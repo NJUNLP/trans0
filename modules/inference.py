@@ -8,7 +8,7 @@ from utils.common_utils import print_once, set_special_tokens, check_available_m
 from modules.data import read_json_or_jsonl_data
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from modules.data import test_data_collactor 
+from modules.data import test_data_collector
 
 import torch.distributed as dist
 import torch, random, time
@@ -70,7 +70,7 @@ def vllm_inference_onair(args, override_cache=False):
                         print(l.strip()[mark_index:].replace(LABEL_MARK, ""))
                     else:
                         print(">>>> "+l+"\n") 
-                        
+
 
 def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cache=False):
     """
@@ -93,7 +93,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
         cache_path = os.path.join(get_path(args, args.cache_dir), args.test_data_path.split("/")[-1].strip())
     else:
         cache_path = os.path.join(get_path(args, args.cache_dir), args.dev_data_path.split("/")[-1].strip())
-    
+
     if override_cache:
         os.system(f"rm -rf %s"%cache_path)
     try:
@@ -115,7 +115,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
         target_model_path, trust_remote_code=True,        
         use_cache=True#, device_map=f"cuda:{dist.get_rank()}"
     ).to("cuda")
-    
+
     # llm.is_parallelizable=True
     # llm.model_parallel=True
     llm, tokenizer = set_special_tokens(llm, tokenizer)  # set special tokens
@@ -140,8 +140,12 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
     progress_bar = tqdm(range(len(data_loader)), disable=(dist.get_rank() != 0))
     for _, batch_lines in enumerate(data_loader):
         progress_bar.update(1)
-        processed_batch = test_data_collactor(
-            batch_lines, tokenizer=tokenizer, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code)
+        processed_batch = test_data_collector(
+            batch_lines,
+            tokenizer=tokenizer,
+            src_lang_code=src_lang_code,
+            trg_lang_code=trg_lang_code,
+        )
         input_ids = processed_batch["input_ids"].to(llm.device)
         with torch.no_grad():
             generation_out = llm.generate(
@@ -163,7 +167,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
             cache_file.write(l+ "\n")
     torch.cuda.empty_cache() 
     dist.barrier()   # wait for all threads to finish
-    
+
     merged_results = []
     if dist.get_rank()==0:  # merge by the first thread
         # collect files
@@ -185,4 +189,3 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
             if len(merged_results)>=len(input_lists) or all(not sublist for sublist in results_for_each_file):
                 break
     return merged_results
-    

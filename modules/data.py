@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 import json, os, random
 import torch
+from typing import List
 import pandas as pd
 from pandas import DataFrame
 import numpy as np
 
 from copy import deepcopy
 from utils.common_utils import print_once
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from transformers import AutoTokenizer
 from configs.prompts import TRANS_PROMPT, LABEL_MARK
 from configs.lang_codes import LangCodes
@@ -122,7 +123,7 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
 
     add "for examples"
     """
-    
+
     input_ids, attention_mask, labels, weights, rewards = [], [], [], [], []
     if show_info:
         print_once(f">>> batch INFO:")
@@ -148,13 +149,13 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
             instruction = trans_prompt.replace("<trg_lan>", lang_codes.get_lang(trg_lan_code))
             if "<src_lan>" in instruction:
                 instruction = instruction.replace("<src_lan>", lang_codes.get_lang(src_lan_code))
-                        
+
             query = instruction.replace("<src_sent>", item[src_lan_code]) + LABEL_MARK
             output = item[trg_lan_code]
 
         query_token_ids = tokenizer.encode(query, add_special_tokens=False)
         target_token_ids = tokenizer.encode(output, add_special_tokens=False)
-        
+
         input_ids.append(
             [tokenizer.bos_token_id] + deepcopy(query_token_ids) + deepcopy(target_token_ids) + [tokenizer.eos_token_id]
         )
@@ -172,13 +173,16 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
         "attention_mask": torch.Tensor(outputs["attention_mask"]).float()
     }
 
-def test_data_collactor(batch, tokenizer, src_lang_code="zh", trg_lang_code="en", show_info:bool=False):
+
+def test_data_collector(
+    batch, tokenizer, src_lang_code="zh", trg_lang_code="en", show_info: bool = False
+):
     # for raw data lines
     input_ids = []
     if show_info:
         print_once(f">>> batch INFO:")
         print_once(batch)
-    
+
     for item in batch:
         trans_prompt = "Please translate the <src_lan> into <trg_lan>: <src_sent> "
         query =  trans_prompt.replace("<src_lan>", lang_codes.get_lang(src_lang_code)).replace("<trg_lan>",lang_codes.get_lang(trg_lang_code))     
@@ -189,7 +193,6 @@ def test_data_collactor(batch, tokenizer, src_lang_code="zh", trg_lang_code="en"
             [tokenizer.bos_token_id] + tokenizer.encode(query, add_special_tokens=False)
         )
 
-
     outputs = batch_padding(
         input_ids, tokenizer,max_length=tokenizer.model_max_length-256)  # returns padded input_ids and attention_masks.
 
@@ -197,6 +200,7 @@ def test_data_collactor(batch, tokenizer, src_lang_code="zh", trg_lang_code="en"
         "input_ids": torch.Tensor(outputs["input_ids"]).long(),
         "attention_mask": torch.Tensor(outputs["attention_mask"]).float()
     }
+
 
 def gen_rank_pair(df:DataFrame):
     """
@@ -231,7 +235,7 @@ def gen_rank_pair(df:DataFrame):
         ],
     }
     """
-    prefered_list = []
+    preferred_list = []
     lesser_list = []
     prompts_list = []
     src_lang_codes = []
@@ -254,15 +258,42 @@ def gen_rank_pair(df:DataFrame):
                     prompts_list.append(input)
                     src_lang_codes.append(src_lang_code)
                     trg_lang_codes.append(trg_lang_code)
-                    prefered_list.append(sequences[index])
+                    preferred_list.append(sequences[index])
                     lesser_list.append(sequences[j])
     out_data = {}
     out_data["prompt"] = prompts_list
     out_data["src_lang_code"] = src_lang_codes
     out_data["trg_lang_code"] = trg_lang_codes
-    out_data["chosen"] = prefered_list
+    out_data["chosen"] = preferred_list
     out_data["rejected"] = lesser_list
     out_df = DataFrame(out_data)
     out_df = out_df.drop_duplicates().dropna()
     out_df.reset_index(drop=True, inplace=True) # remove repeat and NaN data 
     return out_df
+
+
+def build_multilingual_dataloader(
+    lang_codes: List[str],
+    nas_base_path: str = "",
+    batch_size: int = 10,
+    num_workers: int = 0,
+    distributed: bool = True,
+):
+    lang_dataloaders = dict()
+    for lang in lang_codes:
+        fpath = os.path.join(nas_base_path, f"dataset/monolingual/{lang}/merged.txt")
+        with open(fpath, "r") as f:
+            data = f.readlines()
+        if distributed:
+            sampler = DistributedSampler(data, shuffle=True)
+        else:
+            sampler = None
+        dataloader = DataLoader(
+            data,
+            batch_size=batch_size,
+            sampler=sampler,
+            shuffle=(sampler is None),
+            num_workers=num_workers,
+        )
+        lang_dataloaders[lang] = dataloader
+    return lang_dataloaders
