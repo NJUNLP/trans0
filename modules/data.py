@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 import json, os, random
 import torch
+from typing import List
 import pandas as pd
 from pandas import DataFrame
 import numpy as np
 
 from copy import deepcopy
 from utils.common_utils import print_once
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from transformers import AutoTokenizer
 from configs.prompts import TRANS_PROMPT, LABEL_MARK
 from configs.lang_codes import LangCodes
@@ -269,3 +270,30 @@ def gen_rank_pair(df:DataFrame):
     out_df = out_df.drop_duplicates().dropna()
     out_df.reset_index(drop=True, inplace=True) # remove repeat and NaN data 
     return out_df
+
+
+def build_multilingual_dataloader(
+    lang_codes: List[str],
+    nas_base_path: str = "",
+    batch_size: int = 10,
+    num_workers: int = 0,
+    distributed: bool = True,
+):
+    lang_dataloaders = dict()
+    for lang in lang_codes:
+        fpath = os.path.join(nas_base_path, f"dataset/monolingual/{lang}/merged.txt")
+        with open(fpath, "r") as f:
+            data = f.readlines()
+        if distributed:
+            sampler = DistributedSampler(data, shuffle=True)
+        else:
+            sampler = None
+        dataloader = DataLoader(
+            data,
+            batch_size=batch_size,
+            sampler=sampler,
+            shuffle=(sampler is None),
+            num_workers=num_workers,
+        )
+        lang_dataloaders[lang] = dataloader
+    return lang_dataloaders
