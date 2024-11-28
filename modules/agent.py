@@ -12,6 +12,7 @@ from configs.prompts import TRANS_PROMPT, LABEL_MARK, TRANS_CONTEXT_PROMPT
 from configs.lang_codes import LangCodes
 from configs.configs import sp_peft_config
 from modules.data import gen_rank_pair
+from utils.common_utils import set_special_tokens
 from bleurt_pytorch import BleurtTokenizer,BleurtForSequenceClassification
 from sacrebleu.metrics import BLEU, CHRF
 from datasets import Dataset
@@ -88,6 +89,8 @@ class TransAgent:
                 self.base=self.model
                 # self.base = AutoModelForCausalLM.from_pretrained(
                 #     args.output_dir, trust_remote_code=True, device_map=f"cuda:{dist.get_rank()}")
+        
+        self.model, self.tokenizer = set_special_tokens(self.model, self.tokenizer) 
         self.model.is_parallelizable=True
         self.model.model_parallel=True
         
@@ -330,7 +333,7 @@ class TransAgent:
                 best_node_previous = mc_tree.get_best(mc_tree.root)
         return mc_tree
 
-    def yield_tree2rank(self, mc_tree:NaryTree, value_type="utility")->DataFrame:
+    def yield_tree2rank(self, mc_tree:NaryTree, value_type="utility", sort_type="select")->DataFrame:
         """ 
         yield the tree results to a ranking dataframe for training 
         a MCT in layerswise traversal example (ancesters are ahead of descendants):
@@ -340,6 +343,8 @@ class TransAgent:
         ('The setting sun and the lone wild goose fly together, the autumn water and the sky are of the same color.', 0.5720633864402771)]
         
         :param value_type: rank by value: ["utility", "value", "visit", "uct"], default is cumulated utility.
+        by selection sort, the swaps during sort is collected as preference pairs.
+        return the preference pairs
         """
         item_list = mc_tree.layer_traversal(value_type=value_type)
         root_data, root_value=item_list.pop(0)  # the root is valued 
@@ -366,16 +371,18 @@ class TransAgent:
         src_lang_codes = []
         trg_lang_codes = []
         prompts = []
-        for i in range(len(cleaned_list)):
+        for i in range(len(cleaned_list)):  # select-sort for preference pairs
+            item_i, value_i = cleaned_list[i]
             for j in range(i+1, len(cleaned_list)):
-                item_i, value_i = cleaned_list[i]
                 item_j, value_j = cleaned_list[j]
-                if value_j>value_i:
+                if value_j>value_i:  # needs swap --> a preference pair
                     chosen.append(item_j)
-                    rejected.append(aggregate_rejection(item_i))  # rejected.append(item_i)
+                    rejected.append(aggregate_rejection(item_i))  # rejected.append(aggregate_rejection(item_i))
                     prompts.append(root_data)
                     src_lang_codes.append(mc_tree.root.state["lang_code"])
                     trg_lang_codes.append(mc_tree.root.children[0].state["lang_code"])
+                    # swap the data
+                    cleaned_list[i], cleaned_list[j] = cleaned_list[j], cleaned_list[i]
         out_data = {}
         out_data["prompt"] = prompts
         out_data["src_lang_code"] = src_lang_codes

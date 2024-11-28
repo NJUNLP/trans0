@@ -55,3 +55,5 @@ The format of all inputs is in JSON.
 {"<src_lan>": <src_sent>, "<trg_lan>": <trg_sent>}
 # Score:
 """
+
+RM_PROMPT = "Translate the following sentence from <src_lan> to <trg_lan>:\n<src_sent> <end>"

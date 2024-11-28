@@ -149,13 +149,11 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
             instruction = trans_prompt.replace("<trg_lan>", lang_codes.get_lang(trg_lan_code))
             if "<src_lan>" in instruction:
                 instruction = instruction.replace("<src_lan>", lang_codes.get_lang(src_lan_code))
-
             query = instruction.replace("<src_sent>", item[src_lan_code]) + LABEL_MARK
             output = item[trg_lan_code]
 
         query_token_ids = tokenizer.encode(query, add_special_tokens=False)
         target_token_ids = tokenizer.encode(output, add_special_tokens=False)
-
         input_ids.append(
             [tokenizer.bos_token_id] + deepcopy(query_token_ids) + deepcopy(target_token_ids) + [tokenizer.eos_token_id]
         )
@@ -173,16 +171,17 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
         "attention_mask": torch.Tensor(outputs["attention_mask"]).float()
     }
 
-
 def test_data_collector(
-    batch, tokenizer, src_lang_code="zh", trg_lang_code="en", show_info: bool = False
-):
+        batch, tokenizer, 
+        src_lang_code="zh", trg_lang_code="en", 
+        show_info: bool = False
+    ):
     # for raw data lines
     input_ids = []
     if show_info:
         print_once(f">>> batch INFO:")
         print_once(batch)
-
+    
     for item in batch:
         trans_prompt = "Please translate the <src_lan> into <trg_lan>: <src_sent> "
         query =  trans_prompt.replace("<src_lan>", lang_codes.get_lang(src_lang_code)).replace("<trg_lan>",lang_codes.get_lang(trg_lang_code))     
@@ -200,7 +199,6 @@ def test_data_collector(
         "input_ids": torch.Tensor(outputs["input_ids"]).long(),
         "attention_mask": torch.Tensor(outputs["attention_mask"]).float()
     }
-
 
 def gen_rank_pair(df:DataFrame):
     """
@@ -270,7 +268,6 @@ def gen_rank_pair(df:DataFrame):
     out_df = out_df.drop_duplicates().dropna()
     out_df.reset_index(drop=True, inplace=True) # remove repeat and NaN data 
     return out_df
-
 
 def build_multilingual_dataloader(
     lang_codes: List[str],

@@ -4,11 +4,14 @@ import json
 from collections import OrderedDict
 import numpy as np
 import pyarrow as pa
+from modules.RewardModel import RewardModel, reward_model_dir
 from modules.data import read_parallel_data
 from datasets import Dataset
 import pandas as pd
 import torch.distributed as dist
 from utils.common_utils import free_gpu
+from configs.prompts import RM_PROMPT
+from configs.lang_codes import LangCodes
 
 def RL_update(args, train_round:int):
     agent = TransAgent(args, train=train_round)
@@ -70,3 +73,27 @@ def unit_test(args):
     # df = pd.DataFrame(results)
     # df.to_csv(args.dev_data_path.split("/")[-1]+".log", index=False)
     return 
+
+def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv  
+    df = pd.read_csv(self_play_data).dropna()
+    rm_model = RewardModel(reward_model_dir)
+    supported_langs = LangCodes()
+    count = 0
+    for i in range(len(df)):
+        src_lang_code = df.iloc[i]["src_lang_code"]
+        trg_lang_code = df.iloc[i]["trg_lang_code"]
+        chosen_seq = df.iloc[i]["chosen"]
+        reject_seq = df.iloc[i]["rejected"]
+        input_line = df.iloc[i]["prompt"]
+        
+        query = RM_PROMPT.replace("<src_lan>", supported_langs.get_lang(src_lang_code)).\
+            replace("<trg_lan>", supported_langs.get_lang(trg_lang_code)).replace("<src_sent>", input_line)
+
+        score = rm_model.score(prompts=[query]*2, chosens=[chosen_seq, reject_seq])
+        if score[0] > score[1]:
+            count += 1
+        print(f"score:{score}")
+    print(count, len(df), float(count)/len(df))
+    return float(count)/len(df)
+
+# validate_preference("/mnt/bn/v2024/cache/llama3-mega_clax/trans0_agent/zho_Hans-eng_Latn.18.self_play_68.csv")

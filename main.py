@@ -134,7 +134,6 @@ def validate(args, dir=None, global_step=None, src_lang_code="zh", trg_lang_code
     input_list, reference_list = read_parallel_data(
         data_path=get_path(args, args.dev_data_path), 
         src_lang_code=src_lang_code, trg_lang_code=trg_lang_code)
-
     merged_results = distributed_inference(args, dir, input_list, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, override_cache=True)
     if dist.get_rank()==0:  # cache the merged translation to .out file
         processed_out_list = []
@@ -177,7 +176,6 @@ def validate(args, dir=None, global_step=None, src_lang_code="zh", trg_lang_code
     free_gpu()
     return
 
-
 def self_play(
     args,
     train_round: int,
@@ -197,9 +195,8 @@ def self_play(
     the default trg_lang is english
     src_lang_code is a list of lang_codes 
     """
-
+    node_rank = dist.get_rank()
     def get_dataloader_for_round():
-        node_rank = dist.get_rank()
         lang_idx = (train_round + node_rank) % len(trg_lang_codes)
         lang = trg_lang_codes[lang_idx]
         dataloader = multilingual_dataloader[lang]
@@ -207,7 +204,7 @@ def self_play(
         if sampler is not None:
             sampler.set_epoch(train_round)
         return dataloader, lang
-
+    random.seed(int(time.time())+node_rank)
     lang_dataloader, src_lang_code = get_dataloader_for_round()
     lang_code = random.choice([l for l in trg_lang_codes if l != src_lang_code])
     for batch in lang_dataloader:
@@ -261,7 +258,6 @@ def self_play(
         del item
     free_gpu()
     return
-
 
 def RL_update(args, train_round:int):
     agent = TransAgent(args, train=train_round)  # initiate a MC agent for update # requires the training data path 
@@ -323,7 +319,8 @@ if __name__=="__main__":
             wandb.define_metric("bleurt", step_metric="step")
             wandb.define_metric("comet", step_metric="step")
         validate(
-            args, global_step=0, src_lang_code="eng_Latn", trg_lang_code="zho_Hans"
+            args, global_step=0,
+            src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
         )
         trg_lang_codes = ["zho_Hans", "eng_Latn", "isl_Latn", "arb_Arab"]
         global multilingual_dataloader
@@ -336,11 +333,9 @@ if __name__=="__main__":
             RL_update(args, train_round)
             dist.barrier()
             validate(
-                args,
-                dir=os.path.join(get_path(args, args.output_dir), "_RL"),
-                global_step=train_round + 1,
-                src_lang_code="eng_Latn",
-                trg_lang_code="arb_Arab",
+                args, dir=os.path.join(get_path(args,args.output_dir), "_RL"), 
+                global_step=train_round+1,
+                src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
             )
 
     elif args.mode== "simulate":
@@ -348,3 +343,5 @@ if __name__=="__main__":
         unit_test(args)
     else:
         print(">>> undefined mode, exit")
+        
+        

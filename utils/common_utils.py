@@ -80,21 +80,26 @@ def SFTwithKLTrainer(Trainer):
         logprob = compute_loglikelihood(model_outputs.logits, inputs['labels'])
 
 def aggregate_rejection(seq: str)->str:
-    # create a significant rejection
-    degradation = ["repeat", "drop","none", "none", "none","none"]
+    # create a significant rejection to boost the self-play improvement.
+    degradation = ["repeat", "drop", "rand_drop","none", "none" ]
     action = random.choice(degradation)
     out_seq = ""
     if action=="repeat":
-        if len(seq)<10:
+        if len(seq)<10:   # too short, repeat the whole seuquence
             out_seq = f"{seq} {seq}"
-        else: # repeat the middle part
+        else: # repeat a random section
             start=random.randint(0,len(seq)//2 - 1)
             end=random.randint(start+1, len(seq))
             out_seq = f"{seq[:start]} {seq[start:end]} {seq[start:end]} {seq[end:]}"
-    elif action == "drop" and len(seq)>10:
+    elif action == "drop" and len(seq)>10:  # drop a random section
         start = random.randint(0, len(seq)//2 - 1)
         end = random.randint(start+1, len(seq))
         out_seq = seq[:start] + seq[end:]
+    elif action == "rand_drop" and len(seq)>10:  # randomly drop some characters.
+        number_to_drop = random.randint(1, len(seq)//4)
+        indices_to_drop = random.sample(range(len(seq)), number_to_drop)
+        tokens = [seq[i] for i in range(len(seq)) if i not in indices_to_drop]
+        out_seq = "".join(tokens)
     else: # nothing changed
         out_seq = copy.deepcopy(seq)
     return out_seq
