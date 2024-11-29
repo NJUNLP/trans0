@@ -14,6 +14,7 @@ bleurt/*
 *.DS_Store
 collect_data.py
 dataset/*
+output
 
 
 # Byte-compiled / optimized / DLL files
