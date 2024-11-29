@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+import gc
+import glob
+import os
+import random
+import time
+
+import torch
+import torch.distributed as dist
 from peft import PeftModel
-from vllm import LLM, SamplingParams
-from configs.prompts import TRANS_PROMPT, LABEL_MARK
-from configs.lang_codes import LangCodes
-from utils.common_utils import print_once, set_special_tokens, check_available_memory, get_path
-from modules.data import read_json_or_jsonl_data
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from modules.data import test_data_collector
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from vllm import LLM, SamplingParams
 
-import torch.distributed as dist
-import torch, random, time
-import gc, os, glob
+from configs.lang_codes import LangCodes
+from configs.prompts import LABEL_MARK, TRANS_PROMPT
+from modules.data import read_json_or_jsonl_data, test_data_collector
+from utils.common_utils import (
+    check_available_memory,
+    get_path,
+    print_once,
+    set_special_tokens,
+)
 
 lang_codes = LangCodes()
 
@@ -78,9 +87,15 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
     """
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"]="spawn"
     trans_prompt = "Please translate the <src_lan> into <trg_lan>: <src_sent> "
-    input_ls = [trans_prompt.replace("<src_lan>", lang_codes.get_lang(src_lang_code)).replace("<trg_lan>",lang_codes.get_lang(trg_lang_code)).replace("<src_sent>", l) + LABEL_MARK for l in inputs_list]
+    input_ls = [
+        trans_prompt.replace("<src_lan>", lang_codes.get_lang(src_lang_code))
+        .replace("<trg_lan>", lang_codes.get_lang(trg_lang_code))
+        .replace("<src_sent>", l)
+        + LABEL_MARK
+        for l in inputs_list
+    ]
     sampling_params = SamplingParams(n=1, temperature=0, max_tokens=args.max_new_tokens)
-    # reload the LLM ckpt (the transformer repo) 
+    # reload the LLM ckpt (the transformer repo)
     llm = prepare_vllm_inference(args, override_cache)
     generation_out = llm.generate(input_ls, sampling_params)
     return generation_out
