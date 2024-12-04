@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List
 
 import numpy as np
+import torch
 from tqdm import trange
 
 DEFAULT_BLEURT_CKPT = "models/huggingface/bleurt20"
@@ -34,11 +35,16 @@ class BleurtScorer(AbstractScorer):
         self.bleurt_scorer = BleurtForSequenceClassification.from_pretrained(
             ckpt_path, device_map="cuda:0"
         )
-        self.bleurt_tokenizer = BleurtTokenizer.from_pretrained(
-            ckpt_path, device_map="cuda:0"
-        )
+        self.bleurt_tokenizer = BleurtTokenizer.from_pretrained(ckpt_path)
         self.bleurt_scorer.eval()
         self.batch_size = batch_size
+
+    def load_cuda(self):
+        self.bleurt_scorer = self.bleurt_scorer.to("cuda:0")
+
+    def offload_cuda(self):
+        self.bleurt_scorer = self.bleurt_scorer.to("cpu")
+        torch.cuda.empty_cache()
 
     def score(self, references: List[str], hypothesizes: List[str]):
         """
@@ -97,6 +103,13 @@ class CometScorer(AbstractScorer):
 
         self.comet_scorer = comet.load_from_checkpoint(ckpt_path, reload_hparams=True)
         self.batch_size = batch_size
+
+    def load_cuda(self):
+        self.comet_scorer = self.comet_scorer.to("cuda:0")
+
+    def offload_cuda(self):
+        self.comet_scorer = self.comet_scorer.to("cpu")
+        torch.cuda.empty_cache()
 
     def score(self, references: List[str], hypothesizes: List[str]):
         """
