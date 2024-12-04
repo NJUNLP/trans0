@@ -37,6 +37,17 @@ class DefaultTrainingArguments(TrainingArguments):
     flores_script: Optional[str] = field(
         default=None, metadata={"help": "multilingual /monolingual inputs"}
     )
+    self_play_languages: Optional[List[str]] = field(
+        default_factory=lambda: ["eng_Latn", "zho_Hans","deu_Latn", "arb_Arab", "ita_Latn"], 
+        metadata={"help": "Lang codes of flores inputs for self play RL."}
+    )
+    support_languages: Optional[List[str]] = field(
+        default_factory=lambda: ["deu_Latn","por_Latn","fra_Latn","ita_Latn",
+            "eng_Latn","hin_Deva","spa_Latn","vie_Latn",
+            "zho_Hans","rus_Cyrl","ukr_Cyrl", "kor_Hang",
+            "arb_Arab","heb_Hebr",], 
+        metadata={"help": "All support languages."}
+    )
 
     nas_base_path: str = field(
         default=nas_path,  

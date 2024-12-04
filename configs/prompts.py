@@ -3,7 +3,7 @@
 TRANS_PROMPT = [
     "Please translate the <src_lan> into <trg_lan>: <src_sent>",
     "Translate from <src_lan> to <trg_lan>: <src_sent>",
-    "Paraphrase the <src_lan> sentence in <trg_lan>: <src_sent>",
+    "Explain the following <src_lan> sentence in <trg_lan>: <src_sent>",
     "<src_sent> in <src_lan> can be translated to <trg_lan> as: ",
     "<src_lan>: <src_sent> = <trg_lan>: ",
     "<src_lan>: <src_sent>\n<trg_lan>: ",

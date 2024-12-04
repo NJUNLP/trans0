@@ -1,27 +1,18 @@
 # -*- coding: utf-8 -*-
-import gc
-import glob
-import os
-import random
-import time
-
-import torch
-import torch.distributed as dist
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel
+from vllm import LLM, SamplingParams
+from configs.prompts import TRANS_PROMPT, LABEL_MARK
+from configs.lang_codes import LangCodes
+from utils.common_utils import print_once, set_special_tokens, check_available_memory, get_path
+from modules.data import read_json_or_jsonl_data
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
-from vllm import LLM, SamplingParams
+from modules.data import test_data_collector
 
-from configs.lang_codes import LangCodes
-from configs.prompts import LABEL_MARK, TRANS_PROMPT
-from modules.data import read_json_or_jsonl_data, test_data_collector
-from utils.common_utils import (
-    check_available_memory,
-    get_path,
-    print_once,
-    set_special_tokens,
-)
+import torch.distributed as dist
+import torch, random, time
+import gc, os, glob
 
 lang_codes = LangCodes()
 
@@ -86,7 +77,7 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
     :param input_lists: inputs are raw lines ["line1", "line2",...]
     """
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"]="spawn"
-    trans_prompt = "Please translate the <src_lan> into <trg_lan>: <src_sent> "
+    trans_prompt = TRANS_PROMPT[0]
     input_ls = [
         trans_prompt.replace("<src_lan>", lang_codes.get_lang(src_lang_code))
         .replace("<trg_lan>", lang_codes.get_lang(trg_lang_code))
@@ -95,7 +86,7 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
         for l in inputs_list
     ]
     sampling_params = SamplingParams(n=1, temperature=0, max_tokens=args.max_new_tokens)
-    # reload the LLM ckpt (the transformer repo)
+    # reload the LLM ckpt (the transformer repo) 
     llm = prepare_vllm_inference(args, override_cache)
     generation_out = llm.generate(input_ls, sampling_params)
     return generation_out
@@ -103,12 +94,13 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
 def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, override_cache=False):
     """
     :param input_lists: inputs are raw lines ["line1", "line2",...]
+    :param dir: the model for validation, default using the model in args.output_dir
     """
-    if args.test_data_path is not None:        
-        cache_path = os.path.join(get_path(args, args.cache_dir), args.test_data_path.split("/")[-1].strip())
-    else:
-        cache_path = os.path.join(get_path(args, args.cache_dir), args.dev_data_path.split("/")[-1].strip())
-
+    # if args.test_data_path is not None:        
+    #     cache_path = os.path.join(get_path(args, args.cache_dir), args.test_data_path.split("/")[-1].strip())
+    # else:
+    #     cache_path = os.path.join(get_path(args, args.cache_dir), args.dev_data_path.split("/")[-1].strip())
+    cache_path = os.path.join(get_path(args, args.cache_dir), "cached_inference")
     if override_cache:
         os.system(f"rm -rf %s"%cache_path)
     try:
@@ -117,7 +109,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
         pass
 
     target_model_path = get_path(args, args.output_dir) if dir is None else dir
-    print(">>> validate trg output_dir >>>:", target_model_path)
+    print_once(f">>> validate trg output_dir >>>:{target_model_path}" )
     # reload the LLM ckpt from the output_dir
     tokenizer = AutoTokenizer.from_pretrained(
         target_model_path,
@@ -130,7 +122,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
         target_model_path, trust_remote_code=True,        
         use_cache=True#, device_map=f"cuda:{dist.get_rank()}"
     ).to("cuda")
-
+    
     # llm.is_parallelizable=True
     # llm.model_parallel=True
     llm, tokenizer = set_special_tokens(llm, tokenizer)  # set special tokens
@@ -182,7 +174,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
             cache_file.write(l+ "\n")
     torch.cuda.empty_cache() 
     dist.barrier()   # wait for all threads to finish
-
+    
     merged_results = []
     if dist.get_rank()==0:  # merge by the first thread
         # collect files
@@ -204,3 +196,4 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
             if len(merged_results)>=len(input_lists) or all(not sublist for sublist in results_for_each_file):
                 break
     return merged_results
+    

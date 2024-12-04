@@ -10,6 +10,7 @@ import copy, wandb
 
 from transformers import Trainer, AutoTokenizer, AutoModelForCausalLM
 from utils.common_utils import free_gpu, print_once, set_special_tokens, get_path
+from utils.infer_utils import process_flores_test
 from utils.unit_test import unit_test
 from modules.data import (
     get_dataset,
@@ -120,24 +121,27 @@ def test(args, use_vllm=False):
                         out_file.write(l.strip()+"\n") 
     return
 
-def validate(args, dir=None, global_step=None, src_lang_code="zh", trg_lang_code="en"):
+def validate_pair(args,  flores_script, src_lang_code, trg_lang_code, model_dir=None, global_step=None):
     """ 
-    validate the parallel data given a csv or parquet from args.dev_data_path
-    
-    if false, will distribute the test samples across devices for transformers' inference (launched by torchrun)
-    the individual results are cached and merged.
+    validate the parallel from flores scripts.
+    extract and cache parallel valid set for validation.
 
     log the validation by global_step when it's not None
-    
+    :param model_dir: the ckpt to validate
     """
-    assert args.dev_data_path.endswith(".parquet"), "must validate on parquet (parallel data)"
+    # generate the inference data by the flores.py script
+    valid_file_name = f"flores_test_{src_lang_code}-{trg_lang_code}.parquet"
+    valid_data_dir = os.path.join(get_path(args, args.cache_dir), valid_file_name)
+    if not os.path.exists(valid_data_dir):
+        process_flores_test(flores_script, src_lang_code, trg_lang_code, valid_data_dir)
+    print_once(f">>>> valid {valid_data_dir}...")
     input_list, reference_list = read_parallel_data(
-        data_path=get_path(args, args.dev_data_path), 
+        data_path=valid_data_dir, 
         src_lang_code=src_lang_code, trg_lang_code=trg_lang_code)
-    merged_results = distributed_inference(args, dir, input_list, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, override_cache=True)
+    merged_results = distributed_inference(args, model_dir, input_list, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, override_cache=True)
     if dist.get_rank()==0:  # cache the merged translation to .out file
         processed_out_list = []
-        cache_path = os.path.join(get_path(args, args.cache_dir), args.dev_data_path.split("/")[-1].strip())
+        cache_path = os.path.join(get_path(args, args.cache_dir), "cached_inference")
         with open(os.path.join(cache_path,"merged.out"), "w", encoding="utf-8") as out_file:
             for l in merged_results:
                 if LABEL_MARK in l:
@@ -176,20 +180,27 @@ def validate(args, dir=None, global_step=None, src_lang_code="zh", trg_lang_code
     free_gpu()
     return
 
+def validate(args, dev_data_path, model_dir=None, global_step=None):
+    """
+    validate a dev_data_path 
+    extract and cache parallel valid set for validation.
+    log the validation by global_step when it's not None
+    :param dev_data_path: a parallel parquet file (the src_lang_code and trg_lang_code is )
+    :param model_dir: the ckpt to validate
+    """
+    # generate the inference data by the flores.py script
+
+
+
 def self_play(
-    args,
-    train_round: int,
-    trg_lang_codes=[
-        "zho_Hans",
-        "eng_Latn",
-        "deu_Latn",
-        "rus_Cyrl",
-        "arb_Arab",
-        "isl_Latn",
-        "kor_Hang",
-        "ita_Latn",
-    ],
-):
+        args, train_round: int,
+        trg_lang_codes=[
+            "deu_Latn","por_Latn","fra_Latn","ita_Latn",
+            "eng_Latn","hin_Deva","spa_Latn","vie_Latn",
+            "zho_Hans","rus_Cyrl","ukr_Cyrl", "kor_Hang",
+            "arb_Arab","heb_Hebr",
+        ],
+    ):
     """
     collect the preference data via self-play on specific lang_pair, data is cached as csv
     the default trg_lang is english
@@ -284,8 +295,8 @@ if __name__=="__main__":
         choices=['SFT', 'RL', "test", "valid", "air", "simulate"],
         help="SFT (imitation learning with KL div) or RL"
     )
-    parser.add_argument("--src_code", type=str, default="zh", help="indicate src language type for validation")
-    parser.add_argument("--trg_code", type=str, default="en", help="indicate trg language type for validation")
+    parser.add_argument("--src_code", type=str, default="all", help="indicate src language type for validation")
+    parser.add_argument("--trg_code", type=str, default="all", help="indicate trg language type for validation")
     args = parser.parse_args()  # inject add_argument parts
 
     os.environ["HF_HOME"] = os.path.join(args.nas_base_path, "cache")
@@ -303,13 +314,18 @@ if __name__=="__main__":
         src_lan_code = args.src_code
         trg_lan_code = args.trg_code
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
-        validate(args, src_lang_code=src_lan_code, trg_lang_code=trg_lan_code)
+        validate_pair(
+            args, flores_script=args.flores_script, 
+            src_lang_code=src_lan_code, trg_lang_code=trg_lan_code
+        )
     elif args.mode=="air":
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         vllm_inference_onair(args, override_cache=True)
     elif args.mode== "RL":
         # load_dataset(args.flores_script,"all", trust_remote_code=True)
         dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
+        src_lan_code = args.src_code
+        trg_lan_code = args.trg_code
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         sft_LLM(args, force_lora=True)
         wandb.finish()
@@ -318,24 +334,25 @@ if __name__=="__main__":
             wandb.init()
             wandb.define_metric("bleurt", step_metric="step")
             wandb.define_metric("comet", step_metric="step")
-        validate(
-            args, global_step=0,
-            src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
+        validate_pair(
+            args,flores_script=args.flores_script,
+            src_lang_code=src_lan_code, trg_lang_code=trg_lan_code,
+            global_step=0
         )
-        trg_lang_codes = ["zho_Hans", "eng_Latn", "isl_Latn", "arb_Arab"]
         global multilingual_dataloader
         multilingual_dataloader = build_multilingual_dataloader(
-            trg_lang_codes, args.nas_base_path, batch_size=10
+            args.self_play_languages, args.nas_base_path, batch_size=10
         )
         for train_round in range(200):
-            self_play(args, train_round, trg_lang_codes=trg_lang_codes)
+            self_play(args, train_round, trg_lang_codes=args.self_play_languages)
             dist.barrier()
             RL_update(args, train_round)
             dist.barrier()
-            validate(
-                args, dir=os.path.join(get_path(args,args.output_dir), "_RL"), 
+            validate_pair(
+                args, flores_script=args.flores_script, 
+                src_lang_code=src_lan_code, trg_lang_code=trg_lan_code,
+                model_dir=os.path.join(get_path(args,args.output_dir), "_RL"),
                 global_step=train_round+1,
-                src_lang_code="eng_Latn", trg_lang_code="arb_Arab"
             )
 
     elif args.mode== "simulate":
