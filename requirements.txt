@@ -40,7 +40,7 @@ wandb
 pandas
 pytorch-lightning
 
-vllm == 0.5.3
+vllm == 0.6.2
 unbabel-comet
 lingua-language-detector
 git+https://github.com/lucadiliello/bleurt-pytorch.git
