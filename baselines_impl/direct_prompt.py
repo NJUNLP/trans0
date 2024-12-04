@@ -22,15 +22,27 @@ LANGS = {
     "hin_Deva": "Hindi",
     "spa_Latn": "Spanish",
     "tha_Thai": "Thai",
+    "arb_Arab": "Arabic",
+    "isl_Latn": "Icelandic",
 }
-MODELS = ["Llama-3.2-1B-Instruct", "Llama-3.2-3B-Instruct", "Llama-3.1-8B-Instruct"]
+MODELS = [
+    "Llama-3.2-1B-Instruct",
+    "Llama-3.2-3B-Instruct",
+    "Llama-3.1-8B-Instruct",
+]
 DATASET_DIR = "dataset/flores200_dataset/test/"
-OUTPUT_DIR = "output/baseline"
+OUTPUT_DIR = "output/baseline/direct"
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 PROMPT_TEMPLATE = "Please translate the {src_lang} into {trg_lang}: {src_sent}."
 MAX_NEW_TOKENS = 200
 GPU_UTILIZATION = 0.8
 SAMPLING_PARAMS = SamplingParams(n=1, temperature=0, max_tokens=MAX_NEW_TOKENS)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name", type=str, choices=MODELS, default=None)
+    return parser.parse_args()
 
 
 def build_input(src_lang: str, trg_lang: str, tokenizer: AutoTokenizer):
@@ -55,10 +67,11 @@ def build_input(src_lang: str, trg_lang: str, tokenizer: AutoTokenizer):
         tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
         for chat in input_contexts
     ]
-    return input_messages, trg_list
+    return src_list, input_messages, trg_list
 
 
 def save_results(
+    sources: List[str],
     outputs: List[str],
     references: List[str],
     src_lang: str,
@@ -69,29 +82,40 @@ def save_results(
     os.makedirs(output_dir, exist_ok=True)
     output_fpath = os.path.join(output_dir, f"flores_test_{src_lang}-{trg_lang}.json")
     context = [
-        {"predicted": output, "reference": reference}
-        for output, reference in zip(outputs, references)
+        {"source": source, "predicted": output, "reference": reference}
+        for source, output, reference in zip(sources, outputs, references)
     ]
     with open(output_fpath, "w+", encoding="utf-8") as f:
         json.dump(context, f, ensure_ascii=False, indent=2)
 
 
+def infer(model_name: str):
+    model_path = os.path.join("models/huggingface", model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    llm = LLM(
+        model_path,
+        dtype=torch.bfloat16,
+        tokenizer=model_path,
+        tensor_parallel_size=torch.cuda.device_count(),
+        gpu_memory_utilization=GPU_UTILIZATION,
+    )
+    for src_lang in LANGS.keys():
+        for trg_lang in LANGS.keys():
+            if src_lang == trg_lang:
+                continue
+            src_list, input_messages, references = build_input(
+                src_lang, trg_lang, tokenizer
+            )
+            generation_out = llm.generate(input_messages, SAMPLING_PARAMS)
+            outputs = [item.outputs[0].text for item in generation_out]
+            save_results(src_list, outputs, references, src_lang, trg_lang, model_name)
+
+
+def main(args: argparse.Namespace):
+    model_name = args.model_name
+    infer(model_name)
+
+
 if __name__ == "__main__":
-    for model_name in MODELS:
-        model_path = os.path.join("models/huggingface", model_name)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        llm = LLM(
-            model_path,
-            dtype=torch.bfloat16,
-            tokenizer=model_path,
-            tensor_parallel_size=torch.cuda.device_count(),
-            gpu_memory_utilization=GPU_UTILIZATION,
-        )
-        for src_lang in LANGS.keys():
-            for trg_lang in LANGS.keys():
-                if src_lang == trg_lang:
-                    continue
-                input_messages, references = build_input(src_lang, trg_lang, tokenizer)
-                generation_out = llm.generate(input_messages, SAMPLING_PARAMS)
-                outputs = [item.outputs[0].text for item in generation_out]
-                save_results(outputs, references, src_lang, trg_lang, model_name)
+    opts = parse_args()
+    main(opts)
