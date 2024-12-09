@@ -8,18 +8,17 @@ from typing import Any, Dict, List
 
 import torch
 import torch.distributed as dist
-from datasets import load_dataset
+from datasets import Dataset
 from peft import get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
-from trl import SFTConfig, SFTTrainer
-from trl.trainer.utils import pad
-from vllm import LLM, SamplingParams
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.data.data_collator import DataCollatorMixin
+from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from configs.configs import peft_config
 from configs.lang_codes import LangCodes
-from modules.data import get_dataset, read_parallel_data, sft_data_collactor
+from modules.data import get_dataset, read_parallel_data
 from utils.common_utils import free_gpu, set_special_tokens
 
 lang_codes = LangCodes()
@@ -47,117 +46,6 @@ os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 PROMPT_TEMPLATE = "Please translate the {src_lang} into {trg_lang}: {src_sent}"
 MAX_NEW_TOKENS = 200
 GPU_UTILIZATION = 0.8
-SAMPLING_PARAMS = SamplingParams(n=1, temperature=0, max_tokens=MAX_NEW_TOKENS)
-
-
-@dataclass
-class DataCollatorForChatML:
-    """
-    Data collator for ChatML format datasets.
-    Copied and Fixed from TRL source code trl/trainer/utils.py
-    """
-
-    tokenizer: PreTrainedTokenizerBase
-    ignore_index: int = -100
-    max_length: int = None
-    prompt_key: str = "prompt"
-    messages_key: str = "messages"
-
-    def __post_init__(self):
-        if self.tokenizer.pad_token_id is None:
-            raise ValueError(
-                "The tokenizer does not have a pad token. Please set `pad_token_id` in the tokenizer."
-            )
-        if self.max_length is None:
-            # set a sensible default
-            self.max_length = min(self.tokenizer.model_max_length, 1024)
-
-    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        input_ids = []
-        attention_mask = []
-        prompts_input_ids = []
-        prompt_attention_mask = []
-        labels = []
-
-        for example in examples:
-            formatted_prompt = example.get(self.prompt_key, None)
-            if formatted_prompt is None:
-                prompt = example[self.messages_key][:-1]
-                formatted_prompt = self.tokenizer.apply_chat_template(
-                    prompt, tokenize=False, add_generation_prompt=True
-                )
-
-            if "input_ids" not in example:
-                message = example[self.messages_key]
-                formatted_message = self.tokenizer.apply_chat_template(
-                    message, tokenize=False, add_generation_prompt=False
-                )
-                tokenized_message = self.tokenizer(
-                    formatted_message,
-                    truncation=True,
-                    max_length=self.max_length,
-                    padding=False,
-                    return_tensors=None,
-                    add_special_tokens=False,
-                )
-                input_ids.append(tokenized_message["input_ids"])
-                attention_mask.append(tokenized_message["attention_mask"])
-            else:
-                input_ids.append(example["input_ids"])
-                attention_mask.append(example["attention_mask"])
-
-            tokenized_prompt = self.tokenizer(
-                formatted_prompt,
-                truncation=True,
-                max_length=len(input_ids[-1]),
-                padding=False,
-                return_tensors=None,
-                add_special_tokens=False,
-            )
-
-            prompts_input_ids.append(tokenized_prompt["input_ids"])
-            prompt_attention_mask.append(tokenized_prompt["attention_mask"])
-
-            # Create the labels that will have all but the completion tokens of the example["input_ids"] set to ignore_index
-            label = [self.ignore_index] * len(input_ids[-1])
-            completion_start_idx = len(tokenized_prompt["input_ids"])
-            label[completion_start_idx:] = input_ids[-1][completion_start_idx:]
-            labels.append(label)
-
-        # convert to list of tensors and pad
-        input_ids = [torch.tensor(ids, dtype=torch.long) for ids in input_ids]
-        attention_mask = [
-            torch.tensor(mask, dtype=torch.long) for mask in attention_mask
-        ]
-        labels = [torch.tensor(label, dtype=torch.long) for label in labels]
-        input_ids = pad(
-            input_ids, padding_side="left", padding_value=self.tokenizer.pad_token_id
-        )
-        attention_mask = pad(attention_mask, padding_side="left", padding_value=0)
-        labels = pad(labels, padding_side="left", padding_value=self.ignore_index)
-
-        prompts_input_ids = [
-            torch.tensor(ids, dtype=torch.long) for ids in prompts_input_ids
-        ]
-        prompt_attention_mask = [
-            torch.tensor(mask, dtype=torch.long) for mask in prompt_attention_mask
-        ]
-        prompts_input_ids = pad(
-            prompts_input_ids,
-            padding_side="left",
-            padding_value=self.tokenizer.pad_token_id,
-        )
-        prompt_attention_mask = pad(
-            prompt_attention_mask, padding_side="left", padding_value=0
-        )
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-            "prompts": prompts_input_ids,
-            "prompt_attention_mask": prompt_attention_mask,
-        }
 
 
 def get_args():
@@ -213,6 +101,19 @@ def parse_sft_dataset(sample):
     return input_context
 
 
+def get_response_template(tokenizer):
+    demo_message = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello"},
+    ]
+    origin = tokenizer.apply_chat_template(demo_message, tokenize=False)
+    origin_plus_template = tokenizer.apply_chat_template(
+        demo_message, tokenize=False, add_generation_prompt=True
+    )
+    generation_template = origin_plus_template.replace(origin, "")
+    return generation_template
+
+
 def sft_LLM(
     args: argparse.Namespace,
     model_path: Path,
@@ -222,6 +123,7 @@ def sft_LLM(
     sft_dataset = get_dataset(data_path)
     converted_sft_dataset = sum([convert_sft_dataset(d) for d in sft_dataset], [])
     parsed_sft_dataset = [parse_sft_dataset(d) for d in converted_sft_dataset]
+    train_dataset = Dataset.from_list(parsed_sft_dataset)
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
@@ -230,6 +132,9 @@ def sft_LLM(
         truncation_side=args.truncation_side,
         trust_remote_code=True,
     )
+    tokenizer.padding_side = "right"
+    response_template = get_response_template(tokenizer)
+    collator = DataCollatorForCompletionOnlyLM(response_template=response_template)
 
     llm = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
     if args.use_lora:
@@ -239,24 +144,21 @@ def sft_LLM(
     llm.model_parallel = True
     llm, tokenizer = set_special_tokens(llm, tokenizer)
 
-    collator = DataCollatorForChatML(
-        tokenizer,
-        max_length=args.max_length,
-        messages_key="messages",
-        ignore_index=-100,
-    )
-
     training_args = SFTConfig(
         max_seq_length=args.max_length,
         output_dir=save_path,
+        optim="adamw_torch_fused",
+        learning_rate=2e-4,
+        bf16=True,
+        tf32=True,
     )
 
     trainer = SFTTrainer(
         model=llm,
         args=training_args,
-        train_dataset=parsed_sft_dataset,
-        collator=collator,
+        train_dataset=train_dataset,
         processing_class=tokenizer,
+        collator=collator,
     )
     save_state_file = os.path.join(save_path, "trainer_state.json")
     train_results = trainer.train(
@@ -323,6 +225,9 @@ def save_results(
 
 
 def infer(model_path: Path, model_name: str):
+    from vllm import LLM, SamplingParams
+
+    SAMPLING_PARAMS = SamplingParams(n=1, temperature=0, max_tokens=MAX_NEW_TOKENS)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     llm = LLM(
         model_path,
@@ -345,9 +250,8 @@ def infer(model_path: Path, model_name: str):
 
 def main(args: argparse.Namespace):
     model_name = args.model_name
-    model_path = os.path.join("models/huggingface", model_name)
+    # model_path = os.path.join("models/huggingface", model_name)
     model_path = "/Users/nil/Downloads/Llama-3.2-1B-Instruct"
-    # model_path = "/Users/nil/Downloads/Qwen2.5-0.5B-Instruct"
     save_path = os.path.join("saved_models/baseline", model_name)
     sft_LLM(args, model_path, save_path)
     infer(save_path, model_name)

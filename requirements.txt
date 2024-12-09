@@ -3,11 +3,11 @@
 # torchaudio == 2.3.1
 xformers == 0.0.27
 # pytorch-cuda == 12.1
-transformers == 4.43.1
+transformers >= 4.46.0
 datasets
 accelerate
 peft
-trl
+trl >= 0.12.0
 gradio
 sentencepiece
 openai
