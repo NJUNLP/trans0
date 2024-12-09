@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-import os, json
+import json
+import os
+import random
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-import random
-
+# from bleurt_pytorch import BleurtForSequenceClassification, BleurtTokenizer
 from datasets import load_dataset
-from configs.prompts import TRANS_PROMPT
+
 from configs.lang_codes import ISO2wFamily_ISO2codes
-from bleurt_pytorch import BleurtTokenizer, BleurtForSequenceClassification
+from configs.prompts import TRANS_PROMPT
 
 base_data_path = "/mnt/bn/v2024/dataset/nist_zh-en/"
 
@@ -139,7 +141,7 @@ def process_flores_instruct(flores_script, output_file, sample_size=-1):
                     full_data.append({src_lang_code: src_l.strip(), trg_lang_code: trg_l.strip()})
                     data_count+=1
                     if sample_size>0 and data_count>sample_size:
-                            break
+                        break
     print(">> total >>", len(full_data))
     for i in range(len(full_data)):
         if len(full_data[i].keys())!=2:
@@ -147,9 +149,9 @@ def process_flores_instruct(flores_script, output_file, sample_size=-1):
     df = pd.DataFrame({"translation": full_data})
     table = pa.Table.from_pandas(df)
     pq.write_table(table, output_file)
-    # df.to_parquet(output_file, index=False)              
+    # df.to_parquet(output_file, index=False)
     return
-    
+
 def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file="flores_test"):
     """
     extract the flores200 test data to parallel lines.
@@ -190,7 +192,7 @@ def sample_parquet_data(parquet_file, sample_size):
 # alpaca_data_path=generate_alpaca_data("/mnt/bn/v2024/dataset/nist_zh-en/")
 # alpaca_test_path = generate_alpaca_test_data("/mnt/bn/v2024/dataset/nist_zh-en/test/mt08.src")
 # process_flores_data("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet", sample_size=-1)
-process_flores_instruct("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
+# process_flores_instruct("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
 # process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "zho_Hans","arb_Arab")
 
 def calculate_bleurt(ref_list, cand_list):
@@ -222,3 +224,30 @@ def merge_mono_data(dir="/mnt/bn/v2024/dataset/monolingual/rus_Cyrl"):
             out_file.write(l+"\n")
 
 # merge_mono_data("/mnt/bn/v2024/dataset/monolingual/zho_Hans")
+
+LANGS = {
+    "zho_Hans": "Chinese",
+    "eng_Latn": "English",
+    "deu_Latn": "German",
+    "fra_Latn": "French",
+    "ita_Latn": "Italian",
+    "por_Latn": "Portuguese",
+    "hin_Deva": "Hindi",
+    "spa_Latn": "Spanish",
+    "tha_Thai": "Thai",
+    "arb_Arab": "Arabic",
+    "isl_Latn": "Icelandic",
+}
+for src_lang in LANGS.keys():
+    for tgt_lang in LANGS.keys():
+        if src_lang == tgt_lang:
+            continue
+        trg_cand_langs = ("arb_Arab", "isl_Latn")
+        if src_lang not in trg_cand_langs and tgt_lang not in trg_cand_langs:
+            continue
+        process_flores_test(
+            "flores200.py",
+            src_lang,
+            tgt_lang,
+            output_file="dataset/flores200_dataset/test/flores_test",
+        )

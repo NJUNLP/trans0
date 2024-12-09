@@ -2,21 +2,19 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List
 
 import torch
 import torch.distributed as dist
 from datasets import Dataset
 from peft import get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.data.data_collator import DataCollatorMixin
 from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from configs.configs import peft_config
+from configs.configs import DefaultTrainingArguments, peft_config
 from configs.lang_codes import LangCodes
 from modules.data import get_dataset, read_parallel_data
 from utils.common_utils import free_gpu, set_special_tokens
@@ -47,15 +45,22 @@ PROMPT_TEMPLATE = "Please translate the {src_lang} into {trg_lang}: {src_sent}"
 MAX_NEW_TOKENS = 200
 GPU_UTILIZATION = 0.8
 
-
 def get_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, choices=MODELS, required=True)
+    parser = argparse.ArgumentParser(DefaultTrainingArguments)
+    parser.add_argument("--llm_path", type=Path, required=True)
     parser.add_argument("--max_length", type=int, default=2048)
+    parser.add_argument("--optim", type=str, default="adamw_torch")
+    parser.add_argument("--lr_scheduler_type", type=str, default="cosine")
     parser.add_argument("--padding_side", type=str, default="left")
-    parser.add_argument("--truncation_side", type=str, default="left")
+    parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument("--num_train_epochs", type=int, default=1)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=2)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--use_lora", action="store_true")
-    return parser.parse_args()
+    parser.add_argument("--truncation_side", type=str, default="left")
+
+    args = parser.parse_args()
+    return args
 
 
 def convert_sft_dataset(sample):
@@ -116,8 +121,6 @@ def get_response_template(tokenizer):
 
 def sft_LLM(
     args: argparse.Namespace,
-    model_path: Path,
-    save_path: Path,
     data_path: Path = SFT_DATA_PATH,
 ):
     sft_dataset = get_dataset(data_path)
@@ -126,7 +129,7 @@ def sft_LLM(
     train_dataset = Dataset.from_list(parsed_sft_dataset)
 
     tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
+        args.llm_path,
         model_max_length=args.max_length,
         padding_side=args.padding_side,
         truncation_side=args.truncation_side,
@@ -134,9 +137,11 @@ def sft_LLM(
     )
     tokenizer.padding_side = "right"
     response_template = get_response_template(tokenizer)
-    collator = DataCollatorForCompletionOnlyLM(response_template=response_template)
+    collator = DataCollatorForCompletionOnlyLM(
+        response_template=response_template, tokenizer=tokenizer
+    )
 
-    llm = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
+    llm = AutoModelForCausalLM.from_pretrained(args.llm_path, trust_remote_code=True)
     if args.use_lora:
         llm = get_peft_model(llm, peft_config=peft_config)
     llm.config.use_cache = False
@@ -146,11 +151,14 @@ def sft_LLM(
 
     training_args = SFTConfig(
         max_seq_length=args.max_length,
-        output_dir=save_path,
-        optim="adamw_torch_fused",
-        learning_rate=2e-4,
-        bf16=True,
-        tf32=True,
+        optim=args.optim,
+        lr_scheduler_type=args.lr_scheduler_type,
+        learning_rate=args.learning_rate,
+        num_train_epochs=args.num_train_epochs,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        output_dir=args.output_dir,
+        ddp_backend="nccl",
     )
 
     trainer = SFTTrainer(
@@ -158,9 +166,9 @@ def sft_LLM(
         args=training_args,
         train_dataset=train_dataset,
         processing_class=tokenizer,
-        collator=collator,
+        data_collator=collator,
     )
-    save_state_file = os.path.join(save_path, "trainer_state.json")
+    save_state_file = os.path.join(args.output_dir, "trainer_state.json")
     train_results = trainer.train(
         resume_from_checkpoint=True if os.path.exists(save_state_file) else None
     )
@@ -170,10 +178,11 @@ def sft_LLM(
     trainer.save_state()
     if dist.get_rank() == 0:
         if args.use_lora:
-            trainer.save_model(output_dir=save_path)  # cache the lora adaptor for debug
+            # cache the lora adaptor for debug
+            trainer.save_model(output_dir=args.output_dir)
             llm = llm.merge_and_unload()
-        llm.save_pretrained(save_path, safe_serialization=True)
-        tokenizer.save_pretrained(save_path)
+        llm.save_pretrained(args.output_dir, safe_serialization=True)
+        tokenizer.save_pretrained(args.output_dir)
 
     trainer.accelerator.free_memory()
     del llm, tokenizer, trainer
@@ -249,15 +258,17 @@ def infer(model_path: Path, model_name: str):
 
 
 def main(args: argparse.Namespace):
-    model_name = args.model_name
-    # model_path = os.path.join("models/huggingface", model_name)
-    model_path = "/Users/nil/Downloads/Llama-3.2-1B-Instruct"
-    save_path = os.path.join("saved_models/baseline", model_name)
-    sft_LLM(args, model_path, save_path)
-    infer(save_path, model_name)
+    model_path = args.llm_path
+    model_name = model_path.name
+    args.output_dir = os.path.join("saved_models/finetuned", model_name)
+    os.makedirs(args.output_dir, exist_ok=True)
+    sft_LLM(args)
+    if dist.get_rank() == 0:
+        infer(args.output_dir, model_name)
     torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
+    dist.init_process_group(backend="nccl", init_method="env://")
     opts = get_args()
     main(opts)
