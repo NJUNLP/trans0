@@ -14,7 +14,7 @@ from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from configs.configs import DefaultTrainingArguments, peft_config
+from configs.configs import peft_config
 from configs.lang_codes import LangCodes
 from modules.data import get_dataset, read_parallel_data
 from utils.common_utils import free_gpu, set_special_tokens
@@ -46,7 +46,7 @@ MAX_NEW_TOKENS = 200
 GPU_UTILIZATION = 0.8
 
 def get_args():
-    parser = argparse.ArgumentParser(DefaultTrainingArguments)
+    parser = argparse.ArgumentParser()
     parser.add_argument("--llm_path", type=Path, required=True)
     parser.add_argument("--max_length", type=int, default=2048)
     parser.add_argument("--optim", type=str, default="adamw_torch")
@@ -58,7 +58,7 @@ def get_args():
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--use_lora", action="store_true")
     parser.add_argument("--truncation_side", type=str, default="left")
-
+    parser.add_argument("--deepspeed", type=str, default="configs/ds_z2_config.json")
     args = parser.parse_args()
     return args
 
@@ -159,6 +159,10 @@ def sft_LLM(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         output_dir=args.output_dir,
         ddp_backend="nccl",
+        deepspeed=args.deepspeed,
+        logging_steps=1,
+        save_total_limit=1,
+        save_strategy="no",
     )
 
     trainer = SFTTrainer(
@@ -176,6 +180,7 @@ def sft_LLM(
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
+    print(f"Saving model to {args.output_dir}")
     if dist.get_rank() == 0:
         if args.use_lora:
             # cache the lora adaptor for debug
