@@ -46,13 +46,17 @@ class BleurtScorer(AbstractScorer):
         self.bleurt_scorer = self.bleurt_scorer.to("cpu")
         torch.cuda.empty_cache()
 
-    def score(self, references: List[str], hypothesizes: List[str]):
-        """
-        references: List of target sentences
-        hypothesizes: List of MT results
-        """
+    def _score(
+        self, references: List[str], hypothesizes: List[str], verbose: bool = True
+    ):
         scores = []
-        for i in trange(0, len(references), self.batch_size, desc="BLEURT scoring"):
+        for i in trange(
+            0,
+            len(references),
+            self.batch_size,
+            desc="BLEURT scoring",
+            disable=not verbose,
+        ):
             inputs = self.bleurt_tokenizer(
                 references[i : i + self.batch_size],
                 hypothesizes[i : i + self.batch_size],
@@ -64,7 +68,14 @@ class BleurtScorer(AbstractScorer):
                 scores = cur_scores
             else:
                 scores += cur_scores
+        return scores
 
+    def score(self, references: List[str], hypothesizes: List[str]):
+        """
+        references: List of target sentences
+        hypothesizes: List of MT results
+        """
+        scores = self._score(references, hypothesizes)
         score = np.array(scores).mean()
         return score
 
@@ -74,20 +85,8 @@ class BleurtScorer(AbstractScorer):
         cum_references = [ref for refs in references for ref in refs]
         cum_hypothesizes = [hypo for hypos in hypothesizes for hypo in hypos]
 
-        for i in trange(
-            0, len(cum_hypothesizes), self.batch_size, desc="BLEURT scoring"
-        ):
-            inputs = self.bleurt_tokenizer(
-                cum_references[i : i + self.batch_size],
-                cum_hypothesizes[i : i + self.batch_size],
-                return_tensors="pt",
-                padding="longest",
-            ).to("cuda:0")
-            cur_scores = self.bleurt_scorer(**inputs).logits.flatten().tolist()
-            if i == 0:
-                scores = cur_scores
-            else:
-                scores += cur_scores
+        scores = self._score(cum_references, cum_hypothesizes)
+
         avg_scores = []
         for cum in cum_size:
             start, end = cum
@@ -111,30 +110,30 @@ class CometScorer(AbstractScorer):
         self.comet_scorer = self.comet_scorer.to("cpu")
         torch.cuda.empty_cache()
 
+    def _score(self, references: List[str], hypothesizes: List[str]):
+        data = [{"src": ref, "mt": hypo} for ref, hypo in zip(references, hypothesizes)]
+        comet_output = self.comet_scorer.predict(
+            data, batch_size=self.batch_size, gpus=1
+        )
+        scores = comet_output.scores
+        return scores
+
     def score(self, references: List[str], hypothesizes: List[str]):
         """
         references: List of source sentences
         hypothesizes: List of MT results
         """
-        data = [{"src": ref, "mt": hypo} for ref, hypo in zip(references, hypothesizes)]
-        comet_output = self.comet_scorer.predict(
-            data, batch_size=self.batch_size, gpus=1
-        )
-        score = comet_output.system_score
+        scores = self._score(references, hypothesizes)
+        score = np.mean(scores)
         return score
 
     def batch_score(self, references: List[List[str]], hypothesizes: List[List[str]]):
         cum_size = calculate_cum_size(references)
         cum_references = [ref for refs in references for ref in refs]
         cum_hypothesizes = [hypo for hypos in hypothesizes for hypo in hypos]
-        data = [
-            {"src": ref, "mt": hypo}
-            for ref, hypo in zip(cum_references, cum_hypothesizes)
-        ]
-        comet_output = self.comet_scorer.predict(
-            data, batch_size=self.batch_size, gpus=1
-        )
-        scores = comet_output.scores
+
+        scores = self._score(cum_references, cum_hypothesizes)
+
         avg_scores = []
         for cum in cum_size:
             start, end = cum
