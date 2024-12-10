@@ -1,11 +1,9 @@
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
 from typing import List
 
-import torch
 import torch.distributed as dist
 from datasets import Dataset
 from peft import get_peft_model
@@ -16,7 +14,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from configs.configs import peft_config
 from configs.lang_codes import LangCodes
-from modules.data import get_dataset, read_parallel_data
+from modules.data import get_dataset
 from utils.common_utils import free_gpu, set_special_tokens
 
 lang_codes = LangCodes()
@@ -163,6 +161,7 @@ def sft_LLM(
         logging_steps=1,
         save_total_limit=1,
         save_strategy="no",
+        gradient_checkpointing=True,
     )
 
     trainer = SFTTrainer(
@@ -189,78 +188,6 @@ def sft_LLM(
         llm.save_pretrained(args.output_dir, safe_serialization=True)
         tokenizer.save_pretrained(args.output_dir)
 
-    trainer.accelerator.free_memory()
-    del llm, tokenizer, trainer
-    free_gpu()
-
-
-def build_input(src_lang: str, trg_lang: str, tokenizer: AutoTokenizer):
-    test_fpath = os.path.join(DATASET_DIR, f"flores_test_{src_lang}-{trg_lang}.parquet")
-    src_list, trg_list = read_parallel_data(test_fpath, src_lang, trg_lang)
-    input_sentences = [
-        PROMPT_TEMPLATE.format(
-            src_lang=LANGS[src_lang],
-            trg_lang=LANGS[trg_lang],
-            src_sent=sentence,
-        )
-        for sentence in src_list
-    ]
-    input_contexts = [
-        [
-            {"role": "system", "content": "You are a professional translator."},
-            {"role": "user", "content": sentence},
-        ]
-        for sentence in input_sentences
-    ]
-    input_messages = [
-        tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-        for chat in input_contexts
-    ]
-    return src_list, input_messages, trg_list
-
-
-def save_results(
-    sources: List[str],
-    outputs: List[str],
-    references: List[str],
-    src_lang: str,
-    trg_lang: str,
-    model_name: str,
-):
-    output_dir = os.path.join(OUTPUT_DIR, model_name)
-    os.makedirs(output_dir, exist_ok=True)
-    output_fpath = os.path.join(output_dir, f"flores_test_{src_lang}-{trg_lang}.json")
-    context = [
-        {"source": source, "predicted": output, "reference": reference}
-        for source, output, reference in zip(sources, outputs, references)
-    ]
-    with open(output_fpath, "w+", encoding="utf-8") as f:
-        json.dump(context, f, ensure_ascii=False, indent=2)
-
-
-def infer(model_path: Path, model_name: str):
-    from vllm import LLM, SamplingParams
-
-    SAMPLING_PARAMS = SamplingParams(n=1, temperature=0, max_tokens=MAX_NEW_TOKENS)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    llm = LLM(
-        model_path,
-        dtype=torch.bfloat16,
-        tokenizer=model_path,
-        tensor_parallel_size=torch.cuda.device_count(),
-        gpu_memory_utilization=GPU_UTILIZATION,
-    )
-    for src_lang in LANGS.keys():
-        for trg_lang in LANGS.keys():
-            if src_lang == trg_lang:
-                continue
-            src_list, input_messages, references = build_input(
-                src_lang, trg_lang, tokenizer
-            )
-            generation_out = llm.generate(input_messages, SAMPLING_PARAMS)
-            outputs = [item.outputs[0].text for item in generation_out]
-            save_results(src_list, outputs, references, src_lang, trg_lang, model_name)
-
 
 def main(args: argparse.Namespace):
     model_path = args.llm_path
@@ -268,9 +195,6 @@ def main(args: argparse.Namespace):
     args.output_dir = os.path.join("saved_models/finetuned", model_name)
     os.makedirs(args.output_dir, exist_ok=True)
     sft_LLM(args)
-    if dist.get_rank() == 0:
-        infer(args.output_dir, model_name)
-    torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
