@@ -123,7 +123,7 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
 
     add "for examples"
     """
-
+    
     input_ids, attention_mask, labels, weights, rewards = [], [], [], [], []
     if show_info:
         print_once(f">>> batch INFO:")

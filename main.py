@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 import torch.distributed as dist
 import torch
-import transformers 
+import transformers
 import os, datetime, time, glob, random
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import copy, wandb
+import wandb
 
+from vllm import SamplingParams
 from transformers import Trainer, AutoTokenizer, AutoModelForCausalLM
 from utils.common_utils import free_gpu, print_once, set_special_tokens, get_path
-from utils.infer_utils import process_flores_test
+from utils.infer_utils import process_flores_test, process_mix_flores_test, extract_test
 from utils.unit_test import unit_test
 from modules.data import (
     get_dataset,
@@ -19,9 +20,16 @@ from modules.data import (
     read_parallel_data,
     build_multilingual_dataloader,
 )
-from datasets import Dataset, load_dataset
-from modules.inference import vllm_inference, distributed_inference, vllm_inference_onair
+from datasets import Dataset
+from modules.inference import (
+    lang_codes,
+    vllm_inference,
+    distributed_inference,
+    vllm_inference_onair,
+    prepare_vllm_inference,
+)
 from modules.agent import TransAgent
+from modules.metrics import BleurtScorer, CometScorer
 from configs.configs import DefaultTrainingArguments, peft_config
 from configs.prompts import LABEL_MARK, TRANS_PROMPT
 
@@ -43,7 +51,7 @@ def sft_LLM(args, force_lora=False):
 
     # reload LLM, the tokenizer and model used for training
     tokenizer = AutoTokenizer.from_pretrained(
-        get_path(args, args.llm_path), 
+        get_path(args, args.llm_path),
         model_max_length=args.max_length,  # controls the maximum PE
         padding_side = args.padding_side,
         truncation_size = args.truncation_side,
@@ -61,7 +69,7 @@ def sft_LLM(args, force_lora=False):
 
     trainer = Trainer(
         model=llm,
-        tokenizer=tokenizer, 
+        tokenizer=tokenizer,
         args=args,
         train_dataset=train_dataset,
         data_collator=lambda x: sft_data_collactor(x, tokenizer, show_info=args.debug_mode)
@@ -79,8 +87,8 @@ def sft_LLM(args, force_lora=False):
             llm = llm.merge_and_unload()
         llm.save_pretrained(get_path(args, args.output_dir),safe_serialization=True)
         tokenizer.save_pretrained(get_path(args, args.output_dir))
-    
-    trainer.accelerator.free_memory() # memory leak: release the gpu by accelerator! 
+
+    trainer.accelerator.free_memory() # memory leak: release the gpu by accelerator!
     del llm, tokenizer, train_dataset, train_results, trainer
     free_gpu()
     return
@@ -89,7 +97,7 @@ def test(args, use_vllm=False):
     """ fast inference by vllm or multi-thread inference then merge
     :param use_vllm:
     if true, will merge the llm with adaptor in cache_dir for vllm inference (not compatible with 'torchrun' launch)
-    
+
     if false, will distribute the test samples across devices for transformers' inference (launched by torchrun)
     the individual results are cached and merged.
     """
@@ -108,7 +116,7 @@ def test(args, use_vllm=False):
                     mark_index=l.index(LABEL_MARK)
                     out_file.write(l.strip()[mark_index:].replace(LABEL_MARK, "")+"\n")
                 else:
-                    out_file.write(l.strip()+"\n") 
+                    out_file.write(l.strip()+"\n")
     else:
         merged_results = distributed_inference(args, input_lists, src_lang_code="zh", trg_lang_code="en", override_cache=True)
         if dist.get_rank()==0:
@@ -118,11 +126,11 @@ def test(args, use_vllm=False):
                         mark_index=l.index(LABEL_MARK)
                         out_file.write(l.strip()[mark_index:].replace(LABEL_MARK, "")+"\n")
                     else:
-                        out_file.write(l.strip()+"\n") 
+                        out_file.write(l.strip()+"\n")
     return
 
 def validate_pair(args,  flores_script, src_lang_code, trg_lang_code, model_dir=None, global_step=None):
-    """ 
+    """
     validate the parallel from flores scripts.
     extract and cache parallel valid set for validation.
 
@@ -136,7 +144,7 @@ def validate_pair(args,  flores_script, src_lang_code, trg_lang_code, model_dir=
         process_flores_test(flores_script, src_lang_code, trg_lang_code, valid_data_dir)
     print_once(f">>>> valid {valid_data_dir}...")
     input_list, reference_list = read_parallel_data(
-        data_path=valid_data_dir, 
+        data_path=valid_data_dir,
         src_lang_code=src_lang_code, trg_lang_code=trg_lang_code)
     merged_results = distributed_inference(args, model_dir, input_list, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, override_cache=True)
     if dist.get_rank()==0:  # cache the merged translation to .out file
@@ -148,27 +156,22 @@ def validate_pair(args,  flores_script, src_lang_code, trg_lang_code, model_dir=
                     mark_index=l.index(LABEL_MARK)
                     out_file.write(l.strip()[mark_index:].replace(LABEL_MARK, "")+"\n")
                 else:
-                    out_file.write(l.strip()+"\n") 
+                    out_file.write(l.strip()+"\n")
         with open(os.path.join(cache_path,"merged.out"), "r", encoding="utf-8") as out_file:
             for l in out_file:
-                processed_out_list.append(l.strip())   
+                processed_out_list.append(l.strip())
         # evaluate with bleurt
         with torch.no_grad():
-            bleurt_scorer = BleurtForSequenceClassification.from_pretrained(get_path(args, args.bleurt_ckpt), device_map="cuda:0", trust_remote_code=True)
-            bleurt_tokenizer = BleurtTokenizer.from_pretrained(get_path(args, args.bleurt_ckpt), device_map="cuda:0", trust_remote_code=True)
-            bleurt_scorer.eval()
-            inputs = bleurt_tokenizer(reference_list, processed_out_list, padding='longest', return_tensors='pt').to("cuda:0")
-            res = bleurt_scorer(**inputs).logits.flatten().tolist()
-            del bleurt_scorer, bleurt_tokenizer
+            bleurt_scorer=BleurtScorer(ckpt_path=get_path(args, args.bleurt_ckpt))
+            bleurt_score = bleurt_scorer.score(reference_list, processed_out_list)
+            del bleurt_scorer
             free_gpu()
 
-            comet_scorer = comet.load_from_checkpoint(get_path(args, args.comet_ckpt), reload_hparams=True)
-            data = []
-            for src, mt in zip(input_list, processed_out_list):
-                data.append({"src":src, "mt": mt})
-            comet_output = comet_scorer.predict(data, batch_size=8, gpus=1)
-            bleurt_score = np.array(res).mean()
-            comet_score = comet_output.system_score
+            comet_scorer = CometScorer(ckpt_path=get_path(args, args.comet_ckpt))
+            comet_score = comet_scorer.score(input_list, processed_out_list)
+            del comet_scorer
+            free_gpu()
+
             print("bleurt=%.4f"%bleurt_score)
             print("comet=%.4f"%comet_score)
             if global_step is not None:
@@ -176,21 +179,84 @@ def validate_pair(args,  flores_script, src_lang_code, trg_lang_code, model_dir=
                 wandb.log({
                     "bleurt": bleurt_score, "comet": comet_score,
                     "step": global_step})
-            del comet_scorer
+
     free_gpu()
     return
 
-def validate(args, dev_data_path, model_dir=None, global_step=None):
+def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, global_step=None):
     """
-    validate a dev_data_path 
-    extract and cache parallel valid set for validation.
+    validate by dev_data_path file,
+    generate the 
     log the validation by global_step when it's not None
-    :param dev_data_path: a parallel parquet file (the src_lang_code and trg_lang_code is )
-    :param model_dir: the ckpt to validate
+    :param valid_type: the type of the validation, ["en-x", "x-x", "x-en", "all"]
+    :param dev_data_path: a parallel data file. If None, will extract flores.py for multi-lingual parallel test 
+    :param valid_type: the type of the validation, ["input_lang_code", "input", "output_lang_code", "output"]
+    :param model_dir: the model to validate, if None, validate the model in args.output_dir
     """
-    # generate the inference data by the flores.py script
+    if not os.path.exists(os.path.join(get_path(args, args.cache_dir))):
+        os.makedirs(os.path.join(get_path(args, args.cache_dir)))
+    # collect and cache the mixed test-data from flores.py
+    valid_file_dir = process_mix_flores_test(
+        args.flores_script, args.self_play_languages,
+        output_dir= os.path.join(get_path(args, args.cache_dir), "mix_test.parquet")
+    )
+    print_once(f">>>> valid {valid_file_dir}...")
+    extracted_df = extract_test(valid_file_dir, valid_type=valid_type)
+    trans_prompt = TRANS_PROMPT[0]
+    raw_inputs = [item["input"] for item in extracted_df]
+    input_lists = [
+        trans_prompt.replace("<src_lan>", lang_codes.get_lang(item["input_lang_code"]))
+        .replace("<trg_lan>", lang_codes.get_lang(item["output_lang_code"]))
+        .replace("<src_sent>", item["input"])
+        + LABEL_MARK
+        for item in extracted_df
+    ]
+    target_lists = [item["output"] for item in extracted_df]  # cached for metric evaluation
 
+    # prepare VLLM inference
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"]="spawn"
+    sampling_params = SamplingParams(
+        n=1,  # best of 
+        temperature=0.,
+        max_tokens=args.max_new_tokens)
+    llm = prepare_vllm_inference(
+        args, model_dir=model_dir,
+        override_cache=True, cache_suffix=valid_type
+    )
+    generation_out = llm.generate(
+        input_lists, sampling_params=sampling_params)
+    cached_out_lists = [] # cached for metric evaluation
+    cached_out_path = os.path.join(get_path(args, args.cache_dir), f"{valid_type}.out")
+    with open(cached_out_path, "w", encoding="utf-8") as out_file:
+        for item in generation_out:
+            for item_out in item.outputs:
+                l = item_out.text
+                if LABEL_MARK in l:
+                    mark_index=l.index(LABEL_MARK)
+                    out_file.write(l.strip()[mark_index:].replace(LABEL_MARK, "")+"\n")
+                    cached_out_lists.append(l.strip()[mark_index:].replace(LABEL_MARK, ""))
+                else:
+                    out_file.write(l.strip()+"\n")
+                    cached_out_lists.append(l.strip())
+    print("finished")
+    del llm, sampling_params
+    dist.destroy_process_group()
+    free_gpu()
+    # load the scores 
+    bleurt_scorer = BleurtScorer(ckpt_path=get_path(args, args.bleurt_ckpt))
+    bleurt_score = bleurt_scorer.score(target_lists, cached_out_lists)
+    del bleurt_scorer
+    free_gpu()
 
+    comet_scorer = CometScorer(ckpt_path=get_path(args, args.comet_ckpt))
+    comet_score = comet_scorer.score(raw_inputs, cached_out_lists)
+    del comet_scorer
+    free_gpu()
+
+    print("bleurt=%.4f"%bleurt_score)
+    print("comet=%.4f"%comet_score)
+
+    return
 
 def self_play(
         args, train_round: int,
@@ -204,7 +270,7 @@ def self_play(
     """
     collect the preference data via self-play on specific lang_pair, data is cached as csv
     the default trg_lang is english
-    src_lang_code is a list of lang_codes 
+    src_lang_code is a list of lang_codes
     """
     node_rank = dist.get_rank()
     def get_dataloader_for_round():
@@ -223,7 +289,7 @@ def self_play(
         break
 
     # initialize the translation agent for self-play data collection
-    agent = TransAgent(args)  # initiate a MC agent with auto mapping(distributed) to generate data. # requires the training data path 
+    agent = TransAgent(args)  # initiate a MC agent with auto mapping(distributed) to generate data. # requires the training data path
     # agent.distributed_valued_by_mcts(src_list, src_lang_code=src_lang_code, trg_lang_code="en")
     agent_mct_df = []
     for line in src_list:
@@ -271,14 +337,14 @@ def self_play(
     return
 
 def RL_update(args, train_round:int):
-    agent = TransAgent(args, train=train_round)  # initiate a MC agent for update # requires the training data path 
+    agent = TransAgent(args, train=train_round)  # initiate a MC agent for update # requires the training data path
     cached_files = glob.glob(os.path.join(agent.cache_dir, f"self_play_{str(train_round)}*.csv"))
     cached_SP_dir = sorted(cached_files, key=lambda x: os.path.getmtime(x), reverse=True)[0]
     merged_df = pd.read_csv(cached_SP_dir)
     tuning_dataset = Dataset(pa.Table.from_pandas(merged_df))
     print("loading RL finetune data.")
     start=time.time()
-    agent.update_policy(tuning_dataset) 
+    agent.update_policy(tuning_dataset)
     end = time.time()
 
     del agent, tuning_dataset, merged_df
@@ -310,13 +376,10 @@ if __name__=="__main__":
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         test(args)
     elif args.mode== "valid":
-        dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
-        src_lan_code = args.src_code
-        trg_lan_code = args.trg_code
+        # dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
-        validate_pair(
-            args, flores_script=args.flores_script, 
-            src_lang_code=src_lan_code, trg_lang_code=trg_lan_code
+        validate(
+            args, valid_type="x2x",
         )
     elif args.mode=="air":
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
@@ -349,7 +412,7 @@ if __name__=="__main__":
             RL_update(args, train_round)
             dist.barrier()
             validate_pair(
-                args, flores_script=args.flores_script, 
+                args, flores_script=args.flores_script,
                 src_lang_code=src_lan_code, trg_lang_code=trg_lan_code,
                 model_dir=os.path.join(get_path(args,args.output_dir), "_RL"),
                 global_step=train_round+1,
@@ -360,5 +423,5 @@ if __name__=="__main__":
         unit_test(args)
     else:
         print(">>> undefined mode, exit")
-        
-        
+
+

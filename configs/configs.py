@@ -95,7 +95,7 @@ class DefaultTrainingArguments(TrainingArguments):
     )
     cache_dir: Optional[str] = field(default="cache" , metadata={"help": "path to cache"})
     optim: str = field(default="adamw_torch", metadata={"help": "the paramter to use"})
-    use_lora: bool=field(default=True)
+    use_lora: bool=field(default=False)
     learning_rate: float = field(default=1e-4, metadata={"help":"default lr is apt for lora sft"})
     lr_scheduler_type: str= field(default="cosine")
 

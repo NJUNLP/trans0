@@ -2,7 +2,7 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3-debug" torchrun --master_addr $MET
     --mode RL  --mcts_sample_size 10 \
     --llm_path models/huggingface/Llama-3.1-8b/  \
     --train_data_path dataset/flores200_dataset/sample_5k/ \
-    --src_code deu_Latn --trg_code arb_Arab 
+    --src_code deu_Latn --trg_code arb_Arab
     --dev_data_path dataset/flores200_dataset/test/flores_test_deu_Latn-arb_Arab.parquet \
     --nas_base_path /mnt/bn/v2024/  \
     --cache_dir cache/llama3-debug/ \
@@ -34,15 +34,15 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.2_debug" torchrun --nproc_per_node
     --report_to 'wandb' \
     --bf16 True --tf32 True
 
-torchrun --nproc_per_node=8 --master_port=8009 main.py \
-    --mode valid --src_code eng_Latn --trg_code zho_Hans \
+CUDA_VISIBLE_DEVICES="0,1,2,3" python3 main.py \
+    --mode valid \
+    --llm_path models/huggingface/llama3.2_3b/ \
     --output_dir /mnt/bn/v2024/ckpts/llama3.2_debug/ \
     --cache_dir cache/llama3.2_debug/ --flores_script "flores200.py"  \
     --deepspeed configs/ds_z2_config.json \
     --nas_base_path  /mnt/bn/v2024/ \
     --per_device_eval_batch_size 4 \
-    --bf16 True \
-    --tf32 True
+    --tf32 True --bf16 True
 
 CUDA_VISIBLE_DEVICES="0,1" python3 main.py \
     --mode air  --llm_path /mnt/bn/v2024/models/huggingface/Llama-3.1-8b \

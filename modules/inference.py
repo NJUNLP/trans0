@@ -11,22 +11,25 @@ from tqdm import tqdm
 from modules.data import test_data_collector
 
 import torch.distributed as dist
-import torch, random, time
+import torch, time
 import gc, os, glob
 
 lang_codes = LangCodes()
 
-def prepare_vllm_inference(args, override_cache, cache_suffix=""):
+def prepare_vllm_inference(args, model_dir=None,override_cache=True, cache_suffix=""):
     """
     build vllm for lora adapted LLM
     """
+    target_model_path = get_path(args, args.output_dir) if model_dir is None else model_dir
+    print_once(f">>> loading from >>>:{target_model_path}" )
+    
     available_gpu = check_available_memory(device_index=0)
-    gpu_utilization = min(20/available_gpu, 0.6)
+    gpu_utilization = min(25/available_gpu, 0.9)
     if args.use_lora:
-        if override_cache or not os.path.exists(os.path.join(args.cache_dir, "cache_merged_llm"+cache_suffix)):
+        if override_cache or not os.path.exists(os.path.join(get_path(args, args.cache_dir), "cache_merged_llm"+cache_suffix)):
             base_model = AutoModelForCausalLM.from_pretrained(
                 args.llm_path, trust_remote_code=True, device_map="auto")
-            peft_model = PeftModel.from_pretrained(base_model, args.output_dir)
+            peft_model = PeftModel.from_pretrained(base_model, target_model_path)
             merged_model = peft_model.merge_and_unload()
             merged_model.save_pretrained(os.path.join(args.cache_dir, "cache_merged_llm"))
             merged_model.to("cpu")
@@ -35,17 +38,17 @@ def prepare_vllm_inference(args, override_cache, cache_suffix=""):
             torch.cuda.empty_cache()
             print_once("release gpu")
         llm = LLM(
-            model=os.path.join(args.cache_dir, "cache_merged_llm"), dtype=torch.bfloat16 if args.bf16 else torch.float16, 
-            tokenizer=args.output_dir,  # the finetuned vocabulary
-            tensor_parallel_size=torch.cuda.device_count(), 
-            gpu_memory_utilization=gpu_utilization, 
-        ) 
+            model=os.path.join(get_path(args, args.cache_dir), "cache_merged_llm"), dtype=torch.bfloat16 if args.bf16 else torch.float16,
+            tokenizer=target_model_path,  # the finetuned vocabulary
+            tensor_parallel_size=torch.cuda.device_count(),
+            gpu_memory_utilization=gpu_utilization,
+        )
     else: # direct loading from the checkpoint
         llm = LLM(
-            model = args.output_dir, dtype=torch.bfloat16 if args.bf16 else torch.float16, 
-            tokenizer=args.output_dir,  # the finetuned vocabulary
-            tensor_parallel_size=torch.cuda.device_count(), 
-            gpu_memory_utilization=gpu_utilization, 
+            model = target_model_path, dtype=torch.bfloat16 if args.bf16 else torch.float16,
+            tokenizer= target_model_path,  # the finetuned vocabulary
+            tensor_parallel_size=torch.cuda.device_count(),
+            gpu_memory_utilization=gpu_utilization,
         )
     return llm
 
@@ -69,7 +72,7 @@ def vllm_inference_onair(args, override_cache=False):
                         mark_index=l.index(LABEL_MARK)
                         print(l.strip()[mark_index:].replace(LABEL_MARK, ""))
                     else:
-                        print(">>>> "+l+"\n") 
+                        print(">>>> "+l+"\n")
 
 
 def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cache=False):
@@ -85,8 +88,9 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
         + LABEL_MARK
         for l in inputs_list
     ]
-    sampling_params = SamplingParams(n=1, temperature=0, max_tokens=args.max_new_tokens)
-    # reload the LLM ckpt (the transformer repo) 
+    sampling_params = SamplingParams(
+        n=1, temperature=0, max_tokens=args.max_new_tokens)
+    # reload the LLM ckpt (the transformer repo)
     llm = prepare_vllm_inference(args, override_cache)
     generation_out = llm.generate(input_ls, sampling_params)
     return generation_out
@@ -96,7 +100,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
     :param input_lists: inputs are raw lines ["line1", "line2",...]
     :param dir: the model for validation, default using the model in args.output_dir
     """
-    # if args.test_data_path is not None:        
+    # if args.test_data_path is not None:
     #     cache_path = os.path.join(get_path(args, args.cache_dir), args.test_data_path.split("/")[-1].strip())
     # else:
     #     cache_path = os.path.join(get_path(args, args.cache_dir), args.dev_data_path.split("/")[-1].strip())
@@ -119,17 +123,17 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
         trust_remote_code=True)
     time.sleep(int(os.environ["ARNOLD_WORKER_NUM"])*10)
     llm = AutoModelForCausalLM.from_pretrained(
-        target_model_path, trust_remote_code=True,        
+        target_model_path, trust_remote_code=True,
         use_cache=True#, device_map=f"cuda:{dist.get_rank()}"
     ).to("cuda")
-    
+
     # llm.is_parallelizable=True
     # llm.model_parallel=True
     llm, tokenizer = set_special_tokens(llm, tokenizer)  # set special tokens
     llm.eval()  # evaluation mode
     generation_config = GenerationConfig(
         max_new_tokens=args.max_new_tokens,
-        do_sample=False,                    
+        do_sample=False,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
@@ -140,9 +144,9 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
     sampler = torch.utils.data.distributed.DistributedSampler(input_lists, shuffle=False)
 
     data_loader = DataLoader(
-        input_lists, shuffle=False, 
-        batch_size=args.per_device_eval_batch_size, 
-        sampler=sampler)    
+        input_lists, shuffle=False,
+        batch_size=args.per_device_eval_batch_size,
+        sampler=sampler)
     dist_outs = []
     progress_bar = tqdm(range(len(data_loader)), disable=(dist.get_rank() != 0))
     for _, batch_lines in enumerate(data_loader):
@@ -161,7 +165,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
                 generation_config=generation_config, return_dict_in_generate=True
             )
         output_seq =generation_out.sequences.reshape(
-            input_ids.shape[0], generation_config.num_return_sequences, -1)        
+            input_ids.shape[0], generation_config.num_return_sequences, -1)
         input_length = input_ids.shape[1]
         output_seq = output_seq[:, :, input_length:]
         for out_l in output_seq:
@@ -172,9 +176,9 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
         print(">>>> cache to rank", dist.get_rank())
         for l in dist_outs:
             cache_file.write(l+ "\n")
-    torch.cuda.empty_cache() 
+    torch.cuda.empty_cache()
     dist.barrier()   # wait for all threads to finish
-    
+
     merged_results = []
     if dist.get_rank()==0:  # merge by the first thread
         # collect files
@@ -196,4 +200,3 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
             if len(merged_results)>=len(input_lists) or all(not sublist for sublist in results_for_each_file):
                 break
     return merged_results
-    

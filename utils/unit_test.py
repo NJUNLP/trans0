@@ -21,7 +21,7 @@ def RL_update(args, train_round:int):
     merged_df = pd.read_csv(cached_SP_dir)
     tuning_dataset = Dataset(pa.Table.from_pandas(merged_df))
     print("loading RL finetune data.")
-    agent.update_policy(tuning_dataset) 
+    agent.update_policy(tuning_dataset)
     end = time.time()
 
     del agent, tuning_dataset, merged_df
@@ -32,7 +32,7 @@ def RL_update(args, train_round:int):
 def unit_test(args):
     """
     input the parallel data, calculate the MC values, with generation scores
-    yidl to parquet lists 
+    yidl to parquet lists
     """
     # src_list, trg_list = read_parallel_data(args.dev_data_path, src_lang_code = "zh", trg_lang_code = "en")
     input_line = "最低的和惟一必要的工资额就是工人在劳动期间的生活费用，再加上使工人能够养家糊口并使工人种族不致死绝的费用。"
@@ -41,13 +41,14 @@ def unit_test(args):
     # input_line = "十动然拒，十分感动，然而拒绝。"
     # input_line = "白日依山尽,黄河入海流"
     # input_line = "十动然拒"
-    # input_line = "死哪儿风流去了"
     # input_line = "Do not go gentle into that good night, Old age should burn and rave at close of day; Rage, rage against the dying of the light."
-    input_line="黄河之水天上来，落霞与孤鹜齐飞，秋水共长天一色"
+    input_line="التحدي الجديد لمنتدى دافوس"
+    input_line = "我世祖文皇帝，神文圣武，继承大统，应天合人，法尧禅舜，处中国以治万邦，这岂非天心人意乎？"
+    # input_line="想吃涮牛肉"
     agent = TransAgent(args)
     mc_tree = agent.MCTS(
-        src_sent=input_line, 
-        src_lang_code="zh", trg_lang_code="en", max_simulation_depth=3
+        src_sent=input_line,
+        src_lang_code="zho_Hans", trg_lang_code="eng_Latn", max_simulation_depth=3
     )
     item_list = mc_tree.layer_traversal(value_type="utility")
     root_data, root_value = item_list.pop(0)
@@ -72,9 +73,9 @@ def unit_test(args):
 
     # df = pd.DataFrame(results)
     # df.to_csv(args.dev_data_path.split("/")[-1]+".log", index=False)
-    return 
+    return
 
-def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv  
+def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv
     df = pd.read_csv(self_play_data).dropna()
     rm_model = RewardModel(reward_model_dir)
     supported_langs = LangCodes()
@@ -85,7 +86,7 @@ def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv
         chosen_seq = df.iloc[i]["chosen"]
         reject_seq = df.iloc[i]["rejected"]
         input_line = df.iloc[i]["prompt"]
-        
+
         query = RM_PROMPT.replace("<src_lan>", supported_langs.get_lang(src_lang_code)).\
             replace("<trg_lan>", supported_langs.get_lang(trg_lang_code)).replace("<src_sent>", input_line)
 

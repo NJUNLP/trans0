@@ -4,7 +4,7 @@ import os
 from collections import defaultdict
 from pathlib import Path
 
-from utils.eval_test import BleurtScorer, CometScorer
+from modules.metrics import BleurtScorer, CometScorer
 
 LANGS = {
     "zho_Hans": "Chinese",
