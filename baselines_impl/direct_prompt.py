@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import List
 
 import torch
@@ -31,7 +32,6 @@ MODELS = [
     "Llama-3.1-8B-Instruct",
 ]
 DATASET_DIR = "dataset/flores200_dataset/test/"
-OUTPUT_DIR = "output/baseline/direct"
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 PROMPT_TEMPLATE = "Please translate the {src_lang} into {trg_lang}: {src_sent}."
 MAX_NEW_TOKENS = 200
@@ -41,7 +41,8 @@ SAMPLING_PARAMS = SamplingParams(n=1, temperature=0, max_tokens=MAX_NEW_TOKENS)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, choices=MODELS, default=None)
+    parser.add_argument("--model_path", type=Path, default=None)
+    parser.add_argument("--type", type=str, default="finetune")
     return parser.parse_args()
 
 
@@ -89,8 +90,8 @@ def save_results(
         json.dump(context, f, ensure_ascii=False, indent=2)
 
 
-def infer(model_name: str):
-    model_path = os.path.join("models/huggingface", model_name)
+def infer(model_path: Path):
+    model_name = model_path.name
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     llm = LLM(
         model_path,
@@ -112,10 +113,11 @@ def infer(model_name: str):
 
 
 def main(args: argparse.Namespace):
-    model_name = args.model_name
-    infer(model_name)
+    model_path = args.model_path
+    infer(model_path)
 
 
 if __name__ == "__main__":
     opts = parse_args()
+    OUTPUT_DIR = f"output/baseline/{opts.type}"
     main(opts)
