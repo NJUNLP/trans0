@@ -32,7 +32,6 @@ MODELS = [
     "Llama-3.1-8B-Instruct",
 ]
 DATASET_DIR = "dataset/flores200_dataset/test/"
-OUTPUT_DIR = "output/baseline/direct"
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 PROMPT_TEMPLATE = "Please translate the {src_lang} into {trg_lang}: {src_sent}."
 MAX_NEW_TOKENS = 200
@@ -43,6 +42,7 @@ SAMPLING_PARAMS = SamplingParams(n=1, temperature=0, max_tokens=MAX_NEW_TOKENS)
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=Path, default=None)
+    parser.add_argument("--type", type=str, default="finetune")
     return parser.parse_args()
 
 
@@ -119,4 +119,5 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     opts = parse_args()
+    OUTPUT_DIR = f"output/baseline/{opts.type}"
     main(opts)
