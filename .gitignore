@@ -15,7 +15,9 @@ bleurt/*
 collect_data.py
 dataset/*
 output
-
+reproduce.py
+temp*
+tmp*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
