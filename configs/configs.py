@@ -24,8 +24,8 @@ sp_peft_config = LoraConfig(
 class DefaultTrainingArguments(TrainingArguments): 
     # tokenizer and data params
     train_data_path: str = field(
-        default="dataset/nist_zh-en/json/",
-        metadata={"help": "the path to training data"}
+        default="dataset/flores200_dataset/sample_5k/",
+        metadata={"help": "the path to instruction training data"}
     )
     dev_data_path: Optional[str] = field(
         default=None, metadata={"help": "dev data for mode RL"}
@@ -38,7 +38,8 @@ class DefaultTrainingArguments(TrainingArguments):
         default=None, metadata={"help": "multilingual /monolingual inputs"}
     )
     self_play_languages: Optional[List[str]] = field(
-        default_factory=lambda: ["eng_Latn", "zho_Hans","deu_Latn", "arb_Arab", "ita_Latn"], 
+        default_factory=lambda: ["eng_Latn", "por_Latn","deu_Latn", "arb_Arab", 
+                                 "ita_Latn", "zho_Hans", "hin_Deva", ], 
         metadata={"help": "Lang codes of flores inputs for self play RL."}
     )
     support_languages: Optional[List[str]] = field(
@@ -84,7 +85,7 @@ class DefaultTrainingArguments(TrainingArguments):
         metadata={"help": "the pooling for MC value estimation, selected from [average, max, last]."}
     )
     llm_path: str = field(
-        default="models/huggingface/Llama-2-7b-hf", 
+        default="models/huggingface/Llama-3.1-8b", 
         metadata={"help": "the LLM path."}
     )
 

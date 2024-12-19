@@ -6,31 +6,30 @@ from pandas import DataFrame
 
 from lingua import LanguageDetectorBuilder
 from torch.utils.data import DataLoader
-from trl import CPOTrainer, CPOConfig, DPOConfig, DPOTrainer
+from trl import DPOConfig, DPOTrainer
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from configs.prompts import TRANS_PROMPT, LABEL_MARK, TRANS_CONTEXT_PROMPT
 from configs.lang_codes import LangCodes
 from configs.configs import sp_peft_config
 from modules.data import gen_rank_pair
+from modules.metrics import BleurtScorer
 from utils.common_utils import set_special_tokens
-from bleurt_pytorch import BleurtTokenizer,BleurtForSequenceClassification
 from sacrebleu.metrics import BLEU, CHRF
 from datasets import Dataset
 import torch.distributed as dist
 import pandas as pd
-# from torch.nn.parallel import DistributedDataParallel as DDP
 
-from peft import PeftModel, PeftConfig, get_peft_model
+from peft import get_peft_model
 from modules.NaryTree import *
-from utils.common_utils import print_once,free_gpu,aggregate_rejection, get_path, truncate_encoded
-# from sacrebleu.metrics import BLEU
+from utils.common_utils import print_once,free_gpu,aggregate_rejection, get_path
 
 class TransAgent:
     # wrap the methods and functions for trans0.
     def __init__(self, args, train=None, override_cache=False, metric_type="bleurt"):
         # initiate agent by SFTed LLM for translation.
         self.args = args  # reserve the parameters
-        self.sample_size = args.mcts_sample_size if args.mcts_sample_size else 4
+        self.self_play_lang_codes = args.self_play_languages
+        self.sample_size = args.mcts_sample_size
         self.language_detector = LanguageDetectorBuilder.from_all_languages().build()
         # agent's cache
         self.cache_dir = os.path.join(get_path(args, args.cache_dir), args.output_dir.split("/")[-1], "trans0_agent")
@@ -100,16 +99,14 @@ class TransAgent:
         elif self.metric_type=="bleu":
             self.scorer = BLEU()
         elif self.metric_type=="bleurt":
-            self.scorer_tokenizer = BleurtTokenizer.from_pretrained(get_path(args,args.bleurt_ckpt))
-            self.scorer = BleurtForSequenceClassification.from_pretrained(get_path(args,args.bleurt_ckpt)).to("cuda")
-            self.scorer.eval()
+            self.scorer = BleurtScorer(get_path(args,args.bleurt_ckpt), batch_size=5)
         else:
             raise ValueError("Invalid metric_type. Please choose from 'chrf', 'bleu', or 'bleurt'.")
 
 
         self.generate_config = GenerationConfig(
             max_new_tokens=args.max_new_tokens,
-            do_sample=False,
+            temperature=0.1, do_sample=True,
             bos_token_id=self.tokenizer.bos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
             pad_token_id=self.tokenizer.pad_token_id,
@@ -162,12 +159,8 @@ class TransAgent:
         if self.metric_type =="bleurt":
             with torch.no_grad():
                 # one-on-one bleurt with a list of score output
-                inputs1 = self.scorer_tokenizer(references, candidates, padding="longest", return_tensors='pt').to(self.scorer.device)
-                trunc_input1 = truncate_encoded(inputs1)
-                res1 = self.scorer(**trunc_input1).logits.flatten()
-                inputs2 = self.scorer_tokenizer(candidates, references, padding="longest", return_tensors="pt").to(self.scorer.device)
-                trunc_input2 = truncate_encoded(inputs2)
-                res2 = self.scorer(**trunc_input2).logits.flatten()
+                res1 = self.scorer.score(references, candidates, keepdims=True)
+                res2 = self.scorer.score(candidates, references, keepdims=True)
                 res=((res1+res2)/2).tolist()
                 return res
         elif self.metric_type in ["chrf", "bleu"]:
@@ -178,90 +171,90 @@ class TransAgent:
                 scores.append((score2+score1)/2)
             return scores
 
-    def valued_by_BLEUrt(self,
-            inputs_list, targets_list,
-            src_lang_code:str, trg_lang_code:str):
-        """
-        used for RL hyperparameter finetuning.
-        """
-        llm = self.model
-        llm.eval()
-        if dist.get_rank()==0:
-            with torch.no_grad():
-                mc_results = []
-                for src_line, trg_line in zip(inputs_list, targets_list):
-                    explored_trgs, scores = self.step_explore(
-                        llm, src_line, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, sample_mode=False
-                    )
-                    # calculate the reconstructed trgs with reference trgs for bleurt
-                    rewards = self.score(references=[trg_line]*len(explored_trgs), candidates=explored_trgs)
-                    collected = {"input": src_line, "src_lang_code": src_lang_code, "trg_lang_code": trg_lang_code,
-                        "sequences":explored_trgs, "scores":scores, "values":rewards}
-                    print(collected)
-                    mc_results.append(collected)
-                free_gpu()
-                # yield to the distributed cache
-                MC_df = pd.DataFrame(mc_results) # data frame for RL tuning
-                MC_df.to_csv(
-                    os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+f".{dist.get_rank()}"),
-                    index=False
-                )
-                collect_df = pd.read_csv(os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+f".{dist.get_rank()}"))
-                dict4CPO = gen_rank_pair(collect_df)
-                for i in range(len(dict4CPO)):  # update the prompts
-                    translate_prompt = random.choice(TRANS_PROMPT)
-                    in_line = dict4CPO.at[i, 'prompt']
-                    src_code = dict4CPO.at[i, 'src_lang_code']
-                    trg_code = dict4CPO.at[i, 'trg_lang_code']
-                    dict4CPO.at[i, 'prompt'] = translate_prompt.replace("<src_lan>", self.supported_langs.get_lang(src_code)).replace("<trg_lan>",self.supported_langs.get_lang(trg_code)).replace("<src_sent>", in_line)
-                dict4CPO.to_csv(
-                    os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+".self_play.csv"),
-                    index=False
-                )
-        dist.barrier()
-        return os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+".self_play.csv")
+    # def valued_by_BLEUrt(self,
+    #         inputs_list, targets_list,
+    #         src_lang_code:str, trg_lang_code:str):
+    #     """
+    #     used for RL hyperparameter finetuning.
+    #     """
+    #     llm = self.model
+    #     llm.eval()
+    #     if dist.get_rank()==0:
+    #         with torch.no_grad():
+    #             mc_results = []
+    #             for src_line, trg_line in zip(inputs_list, targets_list):
+    #                 explored_trgs, scores = self.step_explore(
+    #                     llm, src_line, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, sample_mode=False
+    #                 )
+    #                 # calculate the reconstructed trgs with reference trgs for bleurt
+    #                 rewards = self.score(references=[trg_line]*len(explored_trgs), candidates=explored_trgs)
+    #                 collected = {"input": src_line, "src_lang_code": src_lang_code, "trg_lang_code": trg_lang_code,
+    #                     "sequences":explored_trgs, "scores":scores, "values":rewards}
+    #                 print(collected)
+    #                 mc_results.append(collected)
+    #             free_gpu()
+    #             # yield to the distributed cache
+    #             MC_df = pd.DataFrame(mc_results) # data frame for RL tuning
+    #             MC_df.to_csv(
+    #                 os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+f".{dist.get_rank()}"),
+    #                 index=False
+    #             )
+    #             collect_df = pd.read_csv(os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+f".{dist.get_rank()}"))
+    #             dict4CPO = gen_rank_pair(collect_df)
+    #             for i in range(len(dict4CPO)):  # update the prompts
+    #                 translate_prompt = random.choice(TRANS_PROMPT)
+    #                 in_line = dict4CPO.at[i, 'prompt']
+    #                 src_code = dict4CPO.at[i, 'src_lang_code']
+    #                 trg_code = dict4CPO.at[i, 'trg_lang_code']
+    #                 dict4CPO.at[i, 'prompt'] = translate_prompt.replace("<src_lan>", self.supported_langs.get_lang(src_code)).replace("<trg_lan>",self.supported_langs.get_lang(trg_code)).replace("<src_sent>", in_line)
+    #             dict4CPO.to_csv(
+    #                 os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+".self_play.csv"),
+    #                 index=False
+    #             )
+    #     dist.barrier()
+    #     return os.path.join(self.cache_dir, self.args.dev_data_path.split("/")[-1]+".self_play.csv")
 
-    def value_by_MCTS(self,src_sent:str,
-            src_lang_code:str, trg_lang_code:str,
-            max_simulation_depth:int):
-        """
-        a dev used for RL tuning. more max_simnulation depth for larger ranking variance.
-        """
-        llm = self.model
-        llm.eval()
-        assert self.supported_langs.check_support(src_lang_code), "source must be supported languages"
-        assert self.supported_langs.check_support(trg_lang_code), "target must be supported languages"
-        # the exploration includes the sampled inference by origin prompts and contexted prompts
-        with torch.no_grad():
-            explored_trgs, scores = self.step_explore(
-                llm, src_sent, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code,
-                sample_mode=False
-            )
-            # add the explored trgs to tree and back-translation for semantic rewards
-            recon_srcs = []
-            for t_line in explored_trgs:  # evaluate by base model reconstruction
-                recon_srcs.extend(self.step_explore(
-                    self.base, t_line, src_lang_code=trg_lang_code, trg_lang_code=src_lang_code,
-                    sample_mode=False)[0])
-            rewards_flat = self.score(references=[src_sent]*len(recon_srcs), candidates=recon_srcs)
+    # def value_by_MCTS(self,src_sent:str,
+    #         src_lang_code:str, trg_lang_code:str,
+    #         max_simulation_depth:int):
+    #     """
+    #     a dev used for RL tuning. more max_simnulation depth for larger ranking variance.
+    #     """
+    #     llm = self.model
+    #     llm.eval()
+    #     assert self.supported_langs.check_support(src_lang_code), "source must be supported languages"
+    #     assert self.supported_langs.check_support(trg_lang_code), "target must be supported languages"
+    #     # the exploration includes the sampled inference by origin prompts and contexted prompts
+    #     with torch.no_grad():
+    #         explored_trgs, scores = self.step_explore(
+    #             llm, src_sent, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code,
+    #             sample_mode=False
+    #         )
+    #         # add the explored trgs to tree and back-translation for semantic rewards
+    #         recon_srcs = []
+    #         for t_line in explored_trgs:  # evaluate by base model reconstruction
+    #             recon_srcs.extend(self.step_explore(
+    #                 self.base, t_line, src_lang_code=trg_lang_code, trg_lang_code=src_lang_code,
+    #                 sample_mode=False)[0])
+    #         rewards_flat = self.score(references=[src_sent]*len(recon_srcs), candidates=recon_srcs)
 
-            recon_src_values = self.simulate(  # simulate with base model
-                self.base, input_list=recon_srcs,
-                src_lang_code=src_lang_code, trg_lang_code=trg_lang_code,
-                max_simulation_depth=max_simulation_depth
-            )
-            rewards_flat = [(a+b*max_simulation_depth)/(max_simulation_depth+1) for (a,b) in zip(rewards_flat, recon_src_values)]
-            rewards = np.array(rewards_flat).reshape(-1, self.sample_size).mean(axis=-1).tolist()  # rewards on translation
+    #         recon_src_values = self.simulate(  # simulate with base model
+    #             self.base, input_list=recon_srcs,
+    #             src_lang_code=src_lang_code, trg_lang_code=trg_lang_code,
+    #             max_simulation_depth=max_simulation_depth
+    #         )
+    #         rewards_flat = [(a+b*max_simulation_depth)/(max_simulation_depth+1) for (a,b) in zip(rewards_flat, recon_src_values)]
+    #         rewards = np.array(rewards_flat).reshape(-1, self.sample_size).mean(axis=-1).tolist()  # rewards on translation
 
-        return {"sequences":explored_trgs,
-                "scores":scores,
-                "values":rewards}
+    #     return {"sequences":explored_trgs,
+    #             "scores":scores,
+    #             "values":rewards}
 
 
     def MCTS(
             self, src_sent:str,
             src_lang_code:str, trg_lang_code:str,
-            MC_count:int=20, max_simulation_depth=3,
+            MC_count:int=20, max_simulation_depth=2,
         )-> NaryTree:
         """
         choose and expand the tree for MC_count rounds, each round will expand a single node.
@@ -283,8 +276,9 @@ class TransAgent:
             root_lang_code = mc_tree.root.state["lang_code"]
             explored_trgs, scores = self.step_explore(
                 llm, mc_tree.root.state["data"], src_lang_code=src_lang_code, trg_lang_code=trg_lang_code,
-                sample_mode=False
+                sample_mode=True
             )
+            # print(">>> explored trgs:",explored_trgs)
             for t_line in explored_trgs: # a dummy simulation for fast initiation.
                 recon_srcs = self.step_explore(
                         self.base, t_line, src_lang_code=trg_lang_code, trg_lang_code=root_lang_code,
@@ -329,15 +323,15 @@ class TransAgent:
                     sample_mode=False
                 )
                 # simulated_value = self.score(references=[src_sent]*len(recon_srcs), candidates=recon_srcs)[0]
-                new_node = mc_tree.add_child(
-                    parent = current_node,
-                    child_data={"data":explored_trgs[0], "lang_code": trg_lang_code, "recon":recon_srcs[0]}
-                )
-                simulated_value = self.simulate(  # multi-round simulation is not necessary
-                    self.base, input_list=[new_node.state["recon"]], origin_src=[src_sent],
+                best_recon, simulated_value = self.simulate(  # simulation via multiple reconstruction circuits.
+                    self.base, trg2value=explored_trgs[0], origin_src=src_sent,
                     src_lang_code=root_lang_code, trg_lang_code=trg_lang_code,
                     max_simulation_depth=max_simulation_depth
-                )[0]
+                )
+                new_node = mc_tree.add_child(
+                    parent = current_node,
+                    child_data={"data":explored_trgs[0], "lang_code": trg_lang_code, "recon":best_recon}
+                )
                 # print(">>>> new node", new_node.state["recon"], new_node.state["data"])
                 # print(">>>> value", simulated_value)
                 mc_tree.backpropagate(new_node, simulated_value)
@@ -364,7 +358,8 @@ class TransAgent:
         cleaned_dict = OrderedDict()  # clear redundancy with mean values for each tree nodes
         for item_data, item_value in item_list:  # check the item data's language code:
             detect_language=self.detect_lang(item_data)
-            if detect_language!=desired_language:
+            root_language = self.detect_lang(root_data)
+            if root_language!="Null_language" and detect_language!=desired_language:
                 item_value = item_value/2
             if item_data not in cleaned_dict:
                 cleaned_dict[item_data] = [item_value]
@@ -377,6 +372,7 @@ class TransAgent:
         src_lang_codes = []
         trg_lang_codes = []
         prompts = []
+        winrates = []  # record the winrate of the prefered over rejected
         src_lang_code=mc_tree.root.state["lang_code"]
         trg_lang_code=mc_tree.root.children[0].state["lang_code"]
         for i in range(len(cleaned_list)):  # select-sort for preference pairs
@@ -391,6 +387,10 @@ class TransAgent:
                         prompts.append(root_data)
                         src_lang_codes.append(src_lang_code)
                         trg_lang_codes.append(trg_lang_code)
+                        winrates.append(
+                            np.exp(value_j)/( np.exp(value_j)+ np.exp(value_i))
+                        )
+                        break
                     # swap the data
                     cleaned_list[i], cleaned_list[j] = cleaned_list[j], cleaned_list[i]
         out_data = {}
@@ -399,41 +399,75 @@ class TransAgent:
         out_data["trg_lang_code"] = trg_lang_codes
         out_data["chosen"] = chosen
         out_data["rejected"] = rejected
+        out_data["winrates"] = winrates
         out_df = DataFrame(out_data)
         out_df = out_df.drop_duplicates().dropna()
         out_df.reset_index(drop=True, inplace=True)
         return out_df
 
-    def simulate(self, llm, input_list:str,
+    def simulate(self, llm, trg2value:str, origin_src:str,
             src_lang_code:str, trg_lang_code:str,
-            max_simulation_depth:int, semantic_threshod:float=0.25, origin_src:str=None
+            max_simulation_depth:int=2, semantic_threshod:float=0.25
         )->List:
         """
-        greedy translate and back-translate src_sents until certain depth, reconstruction decay
+        greedy translate and back-translate to origin_src until certain depth, reconstruction decay
         below a threshold is deprecated to 0.
-        simulation doesn't involves contexted exploration
+        simulation will involve reconstruction circuits through sampled self-play languages {z_i}.
+        "y -> z_i -> x" 
+        simulation doesn't involves contexted exploration with fixed translation prompt.
         reconstruction value by refering to origin_src if provided. origin_src and src_list are in same shape
-        return mean over all the reconstructed bleurt values
+        
+        :param llm: an llm object
+        :param trg2value: a sentence to simulate
+        :param origin_src: a sentence to compare with the simulations
+        :param src_lang_code: the language code of origin_src
+        :param trg_lang_code: the language code of trg2value
+        return the best reconstruction with overall meaned bleurt value (same size with trgs2value)
         """
         src_lang = self.supported_langs.get_lang(src_lang_code)
         trg_lang = self.supported_langs.get_lang(trg_lang_code)
-        simulated_inputs = input_list
+        
+        simulated_inputs = [trg2value]  # starts with the trg2value as list
+        simulated_inputs_lang = [trg_lang] 
         with torch.no_grad():
-            for _ in range(max_simulation_depth):
-                translate_prompt= random.choice(TRANS_PROMPT)
-                src_inputs = [translate_prompt.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang).replace("<src_sent>", item) +LABEL_MARK for item in simulated_inputs]
-                _trgs = self.default_inference(llm, src_inputs, sample_mode=False)[0]
-                invert_translate_prompt = random.choice(TRANS_PROMPT)
-                trg_inputs = [invert_translate_prompt.replace("<trg_lan>", src_lang).replace("<src_lan>", trg_lang).replace("<src_sent>", item) +LABEL_MARK for item in _trgs]
-                recon_list = self.default_inference(llm, trg_inputs, sample_mode=False)[0]
+            translate_prompt= TRANS_PROMPT[0]
+            # direct reconstruction of a dummy src  
+            temp=translate_prompt.replace("<src_lan>", trg_lang).replace("<trg_lan>", src_lang).replace("<src_sent>", trg2value)+LABEL_MARK
+            dummy_src = self.default_inference(llm, [temp], sample_mode=False)[0][0]
+
+            for _ in range(max_simulation_depth):  # simulation rounds
+                # sample bridge languages
+                bridge_lang_code = random.choices(
+                    [i for i in self.self_play_lang_codes if i!=src_lang_code and i!=trg_lang_code], 
+                    k=self.sample_size
+                )
+                bridge_lang = [self.supported_langs.get_lang(code) for code in bridge_lang_code]
+
+                src_inputs = []
+                for line, in_lang in zip(simulated_inputs, simulated_inputs_lang):
+                    for z_lang in bridge_lang:
+                        temp_line = translate_prompt.replace("<src_lan>", in_lang).replace("<trg_lan>", z_lang).replace("<src_sent>", line)
+                        src_inputs.append(temp_line +LABEL_MARK)
+                bridge_trans = self.default_inference(llm, src_inputs, sample_mode=False)[0]  # sents * sample_size
+                # print("bridges:", bridge_trans)
+                recons_inputs = []
+                for z_lang, bridge_trans in zip(bridge_lang*len(simulated_inputs), bridge_trans): # sents * sample_size
+                    temp_line = translate_prompt.replace("<src_lan>", z_lang).replace("<trg_lan>", src_lang).replace("<src_sent>", bridge_trans)
+                    recons_inputs.append(temp_line +LABEL_MARK)
+                recon_list = self.default_inference(llm, recons_inputs, sample_mode=False)[0]
                 simulated_inputs = recon_list
+                simulated_inputs_lang = [src_lang]*len(simulated_inputs)
+
             # reciprocal reconstruction above threshold (early-death) as simulated rewards
-        if origin_src is None:
-            recon_value = np.array(self.score(references=input_list, candidates=simulated_inputs))
-        else:
-            recon_value = np.array(self.score(references=origin_src, candidates=simulated_inputs))
-        recon_value[recon_value<semantic_threshod] = 0.
-        return recon_value.tolist()
+            recon_value = np.array(self.score(references=[origin_src]*len(simulated_inputs), candidates=simulated_inputs))
+            recon_value_dummy = np.array(self.score(references=[dummy_src]*len(simulated_inputs), candidates=simulated_inputs))
+            total_value = np.concatenate((recon_value, recon_value_dummy), axis=0)
+            total_value[total_value<semantic_threshod] = 0.
+
+            best_recon = simulated_inputs[recon_value.argmax()]
+            mean_value = np.mean(total_value)
+            # print(">>> simulate:", mean_value, " ==> ",best_recon)
+        return best_recon, mean_value
 
 
     def step_explore(
@@ -465,13 +499,17 @@ class TransAgent:
                 translate_prompt = context + translate_prompt
             contexted_input = translate_prompt.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang).replace("<src_sent>", src_sent)+LABEL_MARK
             input = [trans_input, contexted_input]
-        elif trans_context is None and sample_mode: # without context, explore with input perturbation with whitespace (semantic reserving).
-            translate_prompt = random.choice(TRANS_PROMPT)
-            perturbed_src_sent = ""
-            for char in src_sent:
-                perturbed_src_sent += char+" "
-            perturbed_input = translate_prompt.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang).replace("<src_sent>", perturbed_src_sent)+LABEL_MARK
-            input = [trans_input, perturbed_input]
+        elif trans_context is None and sample_mode: # fast initiation without context, explore with input perturbation with whitespace (semantic reserving).
+            # translate_prompt = random.choice(TRANS_PROMPT)
+            # num_white_spaces = len(src_sent)//20
+            # perturbed_src_l = list(src_sent)
+            # if num_white_spaces >0:
+            #     positions = random.sample(range(len(src_sent)), num_white_spaces)
+            #     for pos in positions:
+            #         perturbed_src_l[pos] += " "
+            # perturbed_src_sent = "".join(perturbed_src_l)
+            # perturbed_input = translate_prompt.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang).replace("<src_sent>", perturbed_src_sent)+LABEL_MARK
+            input = [trans_input]
         else:  # no merging also no sample
             input = [trans_input]
         # translate:

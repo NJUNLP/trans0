@@ -3,6 +3,7 @@ from pathlib import Path
 from tqdm import trange
 import numpy as np
 import torch
+from utils.common_utils import truncate_encoded
 
 def calculate_cum_size(arrays):
     cum_size = []
@@ -40,7 +41,7 @@ class BleurtScorer(AbstractScorer):
         torch.cuda.empty_cache()
 
     def _score(
-        self, references: List[str], hypothesizes: List[str], verbose: bool = True
+        self, references: List[str], hypothesizes: List[str], verbose: bool = False
     ):
         scores = []
         for i in trange(
@@ -56,21 +57,25 @@ class BleurtScorer(AbstractScorer):
                 return_tensors="pt",
                 padding="longest",
             ).to(self.bleurt_scorer.device)
-            cur_scores = self.bleurt_scorer(**inputs).logits.flatten().tolist()
+            trunc_inputs = truncate_encoded(inputs)
+            cur_scores = self.bleurt_scorer(**trunc_inputs).logits.flatten().tolist()
             if i == 0:
                 scores = cur_scores
             else:
                 scores += cur_scores
         return scores
 
-    def score(self, references: List[str], hypothesizes: List[str]):
+    def score(self, references: List[str], hypothesizes: List[str], keepdims=False):
         """
         references: List of target sentences
         hypothesizes: List of MT results
         """
         scores = self._score(references, hypothesizes)
-        score = np.array(scores).mean()
-        return score
+        if keepdims:
+            return np.array(scores)
+        else:
+            score = np.array(scores).mean()
+            return score
 
     def batch_score(self, references: List[List[str]], hypothesizes: List[List[str]]):
         scores = []
@@ -110,14 +115,17 @@ class CometScorer(AbstractScorer):
         scores = comet_output.scores
         return scores
 
-    def score(self, references: List[str], hypothesizes: List[str]):
+    def score(self, references: List[str], hypothesizes: List[str], keepdims=False):
         """
         references: List of source sentences
         hypothesizes: List of MT results
         """
         scores = self._score(references, hypothesizes)
-        score = np.mean(scores)
-        return score
+        if keepdims:
+            return scores
+        else:
+            score = np.mean(scores)
+            return score
 
     def batch_score(self, references: List[List[str]], hypothesizes: List[List[str]]):
         cum_size = calculate_cum_size(references)

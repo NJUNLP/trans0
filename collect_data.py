@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-import json
-import os
-import random
-
+import os, json, re
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-# from bleurt_pytorch import BleurtForSequenceClassification, BleurtTokenizer
-from datasets import load_dataset
+import random
 
-from configs.lang_codes import ISO2wFamily_ISO2codes
+from datasets import load_dataset
 from configs.prompts import TRANS_PROMPT
+from configs.lang_codes import ISO2wFamily_ISO2codes
+from bleurt_pytorch import BleurtTokenizer, BleurtForSequenceClassification
+from lingua import LanguageDetectorBuilder
 
 base_data_path = "/mnt/bn/v2024/dataset/nist_zh-en/"
 
@@ -64,7 +63,7 @@ def generate_alpaca_test_data(data_path):
         json.dump(data, out_file, ensure_ascii=False, indent=2)
     return os.path.join(base_data_path, data_path+".json")
 
-def generate_parquet_data(src_file, src_lan_code, trg_file, trg_lan_code, output_file):  
+def generate_parquet_data(src_file, src_lan_code, trg_file, trg_lan_code, output_file):
     # read the parallel files
     # extract the schema from a parquet file
     # yield according to schema
@@ -86,14 +85,14 @@ def process_flores_data(flores_script, output_file, sample_size=-1):
     """
     process the multilingual parallel data to parallel lines.
     exclude some language pairs during translation
-    :param flores_script: a .py file that defines flores GeneratorBasedBuilder 
-    :param output_file: for the processed parallel in json 
+    :param flores_script: a .py file that defines flores GeneratorBasedBuilder
+    :param output_file: for the processed parallel in json
     :param sample_size: the size of the dataset, -1 for full data.
     flores200 adopts the ISO2 language codes
     run by: process_flores_data("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
 
     """
-    # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # , 
+    # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # ,
     lang_codes = ["eng_Latn", "fra_Latn", "zho_Hans", "deu_Latn", "rus_Cyrl", "kor_Hang", "jpn_Jpan", "arb_Arab", "heb_Hebr", "swh_Latn"]
     # flores_data = load_dataset(flores_script, "all")["dev"]  # load all languages
     clense_pair = ["eng_Latn", "zho_Hans"]
@@ -119,13 +118,13 @@ def process_flores_data(flores_script, output_file, sample_size=-1):
     print(">> total >>", len(full_data))
     df = pd.DataFrame({"translation": full_data})
     df.to_json(output_file, orient='records', lines=True)
-    return 
+    return
 
 def process_flores_instruct(flores_script, output_file, sample_size=-1):
     all_data= load_dataset(flores_script, "all", trust_remote_code=True)["dev"]
     flores_colums = all_data.column_names
     supported_lang_code = list(ISO2wFamily_ISO2codes.keys())
-    data_size = len(all_data["sentence_eng_Latn"]) 
+    data_size = len(all_data["sentence_eng_Latn"])
 
     full_data = []
     data_count=0
@@ -141,7 +140,7 @@ def process_flores_instruct(flores_script, output_file, sample_size=-1):
                     full_data.append({src_lang_code: src_l.strip(), trg_lang_code: trg_l.strip()})
                     data_count+=1
                     if sample_size>0 and data_count>sample_size:
-                        break
+                            break
     print(">> total >>", len(full_data))
     for i in range(len(full_data)):
         if len(full_data[i].keys())!=2:
@@ -163,7 +162,7 @@ def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file
 
     run by: process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "eng_Latn","zho_Hans")
 
-    pair_code: with dash line '-' 
+    pair_code: with dash line '-'
     """
     # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # ,
     print(f"collect flores test on {src_lang_code} with {trg_lang_code}...")
@@ -195,6 +194,45 @@ def sample_parquet_data(parquet_file, sample_size):
 # process_flores_instruct("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
 # process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "zho_Hans","arb_Arab")
 
+def clense_data_line(data_path, output_path):
+    with open(data_path, "r") as in_file, open(output_path, "w")as out_file:
+        count=0
+        for line in in_file:
+            line = line.strip()
+            pattern=re.compile(r'^COD _ L.*X ')
+            if not line.startswith("<text id="):
+                matched = pattern.match(line)
+                if matched:
+                    line = line[matched.end():]
+                if len(line.split())>15:
+                    out_file.write(line + "\n")
+                    count+=1
+        print(count)
+    return
+# clense_data_line("raw_book_Corpus.txt", "merged.txt")
+
+def process_hin_data(data_path):
+    df = pd.read_json(data_path)["paragraphs"]
+    all_data = sum(df, []) 
+    # language code detector
+    cleaned_data =[]
+    lan_detector = LanguageDetectorBuilder.from_all_languages().build()
+    for item in all_data:
+        detect_code = lan_detector.detect_language_of(item)
+        if detect_code:
+            if detect_code.iso_code_639_1.name.lower() == "hi" and len(item.split(" "))>15:
+                cleaned_data.append(item.strip())
+    cleaned_data = set(cleaned_data)
+    with open("merged_middle.txt", "w") as output_file:
+        for line in cleaned_data:
+            output_file.write(line.strip() + "\n")
+    with open("merged_middle.txt", "r") as input_file, open("merged.txt", "w") as output_file:
+        for line in input_file:
+            if len(line.split(" ")) >15:
+                output_file.write(line.strip() + "\n")
+    return
+process_hin_data("hindi_story_news.json")
+
 def calculate_bleurt(ref_list, cand_list):
     bleurt_path="/mnt/bn/v2024/models/huggingface/bleurt20/"
     score_tokenizer = BleurtTokenizer.from_pretrained(bleurt_path)
@@ -224,30 +262,3 @@ def merge_mono_data(dir="/mnt/bn/v2024/dataset/monolingual/rus_Cyrl"):
             out_file.write(l+"\n")
 
 # merge_mono_data("/mnt/bn/v2024/dataset/monolingual/zho_Hans")
-
-LANGS = {
-    "zho_Hans": "Chinese",
-    "eng_Latn": "English",
-    "deu_Latn": "German",
-    "fra_Latn": "French",
-    "ita_Latn": "Italian",
-    "por_Latn": "Portuguese",
-    "hin_Deva": "Hindi",
-    "spa_Latn": "Spanish",
-    "tha_Thai": "Thai",
-    "arb_Arab": "Arabic",
-    "isl_Latn": "Icelandic",
-}
-for src_lang in LANGS.keys():
-    for tgt_lang in LANGS.keys():
-        if src_lang == tgt_lang:
-            continue
-        trg_cand_langs = ("arb_Arab", "isl_Latn")
-        if src_lang not in trg_cand_langs and tgt_lang not in trg_cand_langs:
-            continue
-        process_flores_test(
-            "flores200.py",
-            src_lang,
-            tgt_lang,
-            output_file="dataset/flores200_dataset/test/flores_test",
-        )

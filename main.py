@@ -310,7 +310,7 @@ def self_play(
         for file in df_path:
             distributed_df = pd.read_csv(file)
             for i in range(len(distributed_df)):
-                translate_prompt = random.choice(TRANS_PROMPT)
+                translate_prompt = random.choice(TRANS_PROMPT[:-1])  # tuning always use the standard mt prompt
                 in_line = distributed_df.at[i, 'prompt']
                 src_code = distributed_df.at[i, 'src_lang_code']
                 trg_code = distributed_df.at[i, 'trg_lang_code']

@@ -24,7 +24,7 @@ def prepare_vllm_inference(args, model_dir=None,override_cache=True, cache_suffi
     print_once(f">>> loading from >>>:{target_model_path}" )
     
     available_gpu = check_available_memory(device_index=0)
-    gpu_utilization = min(25/available_gpu, 0.9)
+    gpu_utilization = min(35.0/available_gpu, 0.9)
     if args.use_lora:
         if override_cache or not os.path.exists(os.path.join(get_path(args, args.cache_dir), "cache_merged_llm"+cache_suffix)):
             base_model = AutoModelForCausalLM.from_pretrained(
@@ -44,12 +44,14 @@ def prepare_vllm_inference(args, model_dir=None,override_cache=True, cache_suffi
             gpu_memory_utilization=gpu_utilization,
         )
     else: # direct loading from the checkpoint
+        print("preparing vllm with ", torch.cuda.device_count())
         llm = LLM(
             model = target_model_path, dtype=torch.bfloat16 if args.bf16 else torch.float16,
             tokenizer= target_model_path,  # the finetuned vocabulary
             tensor_parallel_size=torch.cuda.device_count(),
             gpu_memory_utilization=gpu_utilization,
         )
+        print("done")
     return llm
 
 def vllm_inference_onair(args, override_cache=False):
