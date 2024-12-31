@@ -1,6 +1,5 @@
 from datasets import load_dataset
 import pandas as pd
-from configs.prompts import TRANS_PROMPT
 
 def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_dir):
     """

@@ -2,10 +2,10 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel
 from vllm import LLM, SamplingParams
-from configs.prompts import TRANS_PROMPT, LABEL_MARK
+from configs.prompts import TRANS_PROMPTS, LABEL_MARK, make_mt_instruction
 from configs.lang_codes import LangCodes
 from utils.common_utils import print_once, set_special_tokens, check_available_memory, get_path
-from modules.data import read_json_or_jsonl_data
+from modules.data import read_rawline_data
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from modules.data import test_data_collector
@@ -60,11 +60,15 @@ def vllm_inference_onair(args, override_cache=False):
     """
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"]="spawn"
     sampling_params = SamplingParams(n=1, temperature=0., max_tokens=args.max_new_tokens)
-    llm = prepare_vllm_inference(args, override_cache)
+    llm = prepare_vllm_inference(args, override_cache=override_cache)
     with torch.no_grad():
         while True:
             print("please input the query:")
             input_l = input()
+            tokenizer = llm.get_tokenizer()
+            if tokenizer.chat_template is not None:
+                input_l = tokenizer.apply_chat_template(
+                    make_mt_instruction(input_l), tokenize=False, add_generation_prompt=True)
             generation_out = llm.generate([input_l], sampling_params)
             for item in generation_out:
                 for item_out in item.outputs:
@@ -81,20 +85,35 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
     """
     :param input_lists: inputs are raw lines ["line1", "line2",...]
     """
-    os.environ["VLLM_WORKER_MULTIPROC_METHOD"]="spawn"
-    trans_prompt = TRANS_PROMPT[0]
+    trans_prompt = TRANS_PROMPTS[0]
     input_ls = [
-        trans_prompt.replace("<src_lan>", lang_codes.get_lang(src_lang_code))
-        .replace("<trg_lan>", lang_codes.get_lang(trg_lang_code))
-        .replace("<src_sent>", l)
-        + LABEL_MARK
+        trans_prompt.format(
+            src_lan=lang_codes.get_lang(src_lang_code),
+            trg_lan=lang_codes.get_lang(trg_lang_code),
+            src_sent=l)
         for l in inputs_list
     ]
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"]="spawn"
     sampling_params = SamplingParams(
         n=1, temperature=0, max_tokens=args.max_new_tokens)
     # reload the LLM ckpt (the transformer repo)
-    llm = prepare_vllm_inference(args, override_cache)
-    generation_out = llm.generate(input_ls, sampling_params)
+    llm = prepare_vllm_inference(
+        args, model_dir=None, 
+        override_cache=override_cache)
+    tokenizer = llm.get_tokenizer()
+    if tokenizer.chat_template is not None:
+        input_ls = [
+            tokenizer.apply_chat_template(
+                    make_mt_instruction(l), tokenize=False,
+                    add_generation_prompt=True)
+            for l in input_ls
+        ]
+    else:
+        input_ls =[
+            l+LABEL_MARK for l in input_ls
+        ]
+    generation_out = llm.generate(
+        input_ls, sampling_params=sampling_params)
     return generation_out
 
 def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, override_cache=False):
@@ -188,7 +207,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
         sorted_paths = sorted(cache_paths, key=lambda x:int(x.split("rank_")[1]))
         results_for_each_file = []
         for res_path in sorted_paths:
-            new_results = read_json_or_jsonl_data(res_path)
+            new_results = read_rawline_data(res_path)
             results_for_each_file.append(new_results)
         while True:
             for sublist in results_for_each_file:

@@ -8,7 +8,7 @@ from lingua import LanguageDetectorBuilder
 from torch.utils.data import DataLoader
 from trl import DPOConfig, DPOTrainer
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
-from configs.prompts import TRANS_PROMPT, LABEL_MARK, TRANS_CONTEXT_PROMPT
+from configs.prompts import TRANS_PROMPTS, LABEL_MARK, TRANS_CONTEXT_PROMPT
 from configs.lang_codes import LangCodes
 from configs.configs import sp_peft_config
 from modules.data import gen_rank_pair
@@ -45,6 +45,7 @@ class TransAgent:
             ckpt_path = self.agent_out_dir
         else:
             ckpt_path = get_path(args, args.output_dir) # no exsiting RL tuning
+        print_once(f">>>loading the agent from {ckpt_path}")
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             ckpt_path,
@@ -130,7 +131,7 @@ class TransAgent:
             loss_type=args.rl_loss_type, #cpo_alpha=.0,
             per_device_train_batch_size=1,
             deepspeed=args.deepspeed,
-            gradient_accumulation_steps=4*args.gradient_accumulation_steps*args.per_device_train_batch_size,
+            gradient_accumulation_steps=int(args.gradient_accumulation_steps/2),
             resume_from_checkpoint=True,
             save_strategy="no",
             remove_unused_columns=args.remove_unused_columns,
@@ -383,7 +384,11 @@ class TransAgent:
                     # exclude the erroreous lang_code preference.
                     if self.detect_lang(item_j) == desired_language and "[COT]" not in item_j:
                         chosen.append(item_j)
-                        rejected.append(aggregate_rejection(item_i))  # rejected.append(aggregate_rejection(item_i))
+                        # rejection = aggregate_rejection(item_i)
+                        rejection = item_i
+                        if len(rejection)==0:
+                            print(">>> warning: empty line as rejection")
+                        rejected.append(rejection)  # rejected.append(aggregate_rejection(item_i))
                         prompts.append(root_data)
                         src_lang_codes.append(src_lang_code)
                         trg_lang_codes.append(trg_lang_code)
@@ -401,7 +406,7 @@ class TransAgent:
         out_data["rejected"] = rejected
         out_data["winrates"] = winrates
         out_df = DataFrame(out_data)
-        out_df = out_df.drop_duplicates().dropna()
+        out_df = out_df.drop_duplicates()
         out_df.reset_index(drop=True, inplace=True)
         return out_df
 
@@ -413,10 +418,10 @@ class TransAgent:
         greedy translate and back-translate to origin_src until certain depth, reconstruction decay
         below a threshold is deprecated to 0.
         simulation will involve reconstruction circuits through sampled self-play languages {z_i}.
-        "y -> z_i -> x" 
+        "y -> z_i -> x"
         simulation doesn't involves contexted exploration with fixed translation prompt.
         reconstruction value by refering to origin_src if provided. origin_src and src_list are in same shape
-        
+
         :param llm: an llm object
         :param trg2value: a sentence to simulate
         :param origin_src: a sentence to compare with the simulations
@@ -426,19 +431,19 @@ class TransAgent:
         """
         src_lang = self.supported_langs.get_lang(src_lang_code)
         trg_lang = self.supported_langs.get_lang(trg_lang_code)
-        
+
         simulated_inputs = [trg2value]  # starts with the trg2value as list
-        simulated_inputs_lang = [trg_lang] 
+        simulated_inputs_lang = [trg_lang]
         with torch.no_grad():
-            translate_prompt= TRANS_PROMPT[0]
-            # direct reconstruction of a dummy src  
-            temp=translate_prompt.replace("<src_lan>", trg_lang).replace("<trg_lan>", src_lang).replace("<src_sent>", trg2value)+LABEL_MARK
+            translate_prompt= TRANS_PROMPTS[0]
+            # direct reconstruction of a dummy src
+            temp=translate_prompt.format(src_lan=trg_lang,trg_lan=src_lang,src_sent=trg2value)+LABEL_MARK
             dummy_src = self.default_inference(llm, [temp], sample_mode=False)[0][0]
 
             for _ in range(max_simulation_depth):  # simulation rounds
                 # sample bridge languages
                 bridge_lang_code = random.choices(
-                    [i for i in self.self_play_lang_codes if i!=src_lang_code and i!=trg_lang_code], 
+                    [i for i in self.self_play_lang_codes if i!=src_lang_code and i!=trg_lang_code],
                     k=self.sample_size
                 )
                 bridge_lang = [self.supported_langs.get_lang(code) for code in bridge_lang_code]
@@ -446,13 +451,13 @@ class TransAgent:
                 src_inputs = []
                 for line, in_lang in zip(simulated_inputs, simulated_inputs_lang):
                     for z_lang in bridge_lang:
-                        temp_line = translate_prompt.replace("<src_lan>", in_lang).replace("<trg_lan>", z_lang).replace("<src_sent>", line)
+                        temp_line = translate_prompt.format(src_lan=in_lang, trg_lan=z_lang, src_sent=line)
                         src_inputs.append(temp_line +LABEL_MARK)
                 bridge_trans = self.default_inference(llm, src_inputs, sample_mode=False)[0]  # sents * sample_size
                 # print("bridges:", bridge_trans)
                 recons_inputs = []
                 for z_lang, bridge_trans in zip(bridge_lang*len(simulated_inputs), bridge_trans): # sents * sample_size
-                    temp_line = translate_prompt.replace("<src_lan>", z_lang).replace("<trg_lan>", src_lang).replace("<src_sent>", bridge_trans)
+                    temp_line = translate_prompt.format(src_lan=z_lang, trg_lan=src_lang, src_sent=bridge_trans)
                     recons_inputs.append(temp_line +LABEL_MARK)
                 recon_list = self.default_inference(llm, recons_inputs, sample_mode=False)[0]
                 simulated_inputs = recon_list
@@ -488,16 +493,19 @@ class TransAgent:
         # process the input for agent (LLM)'s translation
         src_lang = self.supported_langs.get_lang(src_lang_code)
         trg_lang = self.supported_langs.get_lang(trg_lang_code)
-        translate_prompt = random.choice(TRANS_PROMPT)
-        trans_input = translate_prompt.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang).replace("<src_sent>", src_sent)+LABEL_MARK
+        translate_prompt = random.choice(TRANS_PROMPTS)
+        trans_input = translate_prompt.format(
+            src_lan=src_lang, trg_lan=trg_lang, src_sent=src_sent)+LABEL_MARK
         if trans_context is not None:  # merging the exploration via context
             assert len(trans_context)==2, "trans_context must be two dicts of language pairs"
-            translate_prompt = random.choice(TRANS_PROMPT)
+            translate_prompt = random.choice(TRANS_PROMPTS)
+            contexted_input = translate_prompt.format(src_lan=src_lang, trg_lan=trg_lang, src_sent=src_sent)+LABEL_MARK
             for item in trans_context:  # traverse the context
                 context_prompt = random.choice(TRANS_CONTEXT_PROMPT)
-                context = context_prompt.replace("<word_pair_src>", item[src_lang_code]).replace("<word_pair_trg>", item[trg_lang_code])
-                translate_prompt = context + translate_prompt
-            contexted_input = translate_prompt.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang).replace("<src_sent>", src_sent)+LABEL_MARK
+                context = context_prompt.format(
+                    src_lan=src_lang, word_pair_src=item[src_lang_code],
+                    trg_lan=trg_lang, word_pair_trg=item[trg_lang_code])
+                contexted_input = context + contexted_input
             input = [trans_input, contexted_input]
         elif trans_context is None and sample_mode: # fast initiation without context, explore with input perturbation with whitespace (semantic reserving).
             # translate_prompt = random.choice(TRANS_PROMPT)
@@ -579,6 +587,7 @@ class TransAgent:
         rl_trainer.log_metrics("train", metrics)
         rl_trainer.save_metrics("train", metrics)
         rl_trainer.save_state()
+        loss = rl_trainer.state.log_history[-1]["train_loss"]
         if dist.get_rank()==0:
             if self.args.use_lora:
                 rl_trainer.save_model(output_dir=os.path.join(self.agent_out_dir, "rl_adaptor"))
@@ -589,7 +598,7 @@ class TransAgent:
         del rl_trainer
         free_gpu()
         print("finish tuning epoch")
-        return
+        return loss
 
     def distributed_valued_by_mcts(self, inputs_list, src_lang_code, trg_lang_code):
         sampler  = torch.utils.data.distributed.DistributedSampler(inputs_list)
@@ -626,11 +635,15 @@ class TransAgent:
                 distributed_df = pd.read_csv(res_path)
                 dict4CPO = gen_rank_pair(distributed_df)
                 for i in range(len(dict4CPO)):  # update the prompts
-                    translate_prompt = random.choice(TRANS_PROMPT)
+                    translate_prompt = random.choice(TRANS_PROMPTS)
                     in_line = dict4CPO.at[i, 'prompt']
                     src_code = dict4CPO.at[i, 'src_lang_code']
                     trg_code = dict4CPO.at[i, 'trg_lang_code']
-                    dict4CPO.at[i, 'prompt'] = translate_prompt.replace("<src_lan>", self.supported_langs.get_lang(src_code)).replace("<trg_lan>",self.supported_langs.get_lang(trg_code)).replace("<src_sent>", in_line)
+                    dict4CPO.at[i, 'prompt'] = translate_prompt.format(
+                        src_lan=self.supported_langs.get_lang(src_code),
+                        trg_lan=self.supported_langs.get_lang(trg_code),
+                        src_sent=in_line
+                    )
                 collect_df.append(dict4CPO)
             # print(collect_df)
             merged_df = pd.concat(collect_df, ignore_index=True)

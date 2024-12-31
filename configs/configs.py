@@ -102,7 +102,7 @@ class DefaultTrainingArguments(TrainingArguments):
 
     rl_loss_type:str=field(default="sppo_hard")
     rl_learning_rate: float=field(default=1e-5, metadata={"help":"default lr is for lora tuning"})
-    rl_lr_scheduler_type: str=field(default="constant")
+    rl_lr_scheduler_type: str=field(default="cosine")
 
     save_steps: float = field(default=10)
     save_total_limit: float=field(default=2)

@@ -133,7 +133,7 @@ def sft_LLM(
         truncation_side=args.truncation_side,
         trust_remote_code=True,
     )
-    tokenizer.padding_side = "right"
+    tokenizer.padding_side = "left"   # tuning must be left-padded
     response_template = get_response_template(tokenizer)
     collator = DataCollatorForCompletionOnlyLM(
         response_template=response_template, tokenizer=tokenizer

@@ -81,7 +81,7 @@ def SFTwithKLTrainer(Trainer):
 
 def aggregate_rejection(seq: str)->str:
     # create a significant rejection to boost the self-play improvement.
-    degradation = ["repeat", "drop", "rand_drop","none", "none" ]
+    degradation = ["repeat", "drop", "rand_drop","none", "none", "none","none"]
     action = random.choice(degradation)
     out_seq = ""
     if action=="repeat":
@@ -91,10 +91,13 @@ def aggregate_rejection(seq: str)->str:
             start=random.randint(0,len(seq)//2 - 1)
             end=random.randint(start+1, len(seq))
             out_seq = f"{seq[:start]} {seq[start:end]} {seq[start:end]} {seq[end:]}"
-    elif action == "drop" and len(seq)>10:  # drop a random section
-        start = random.randint(0, len(seq)//2 - 1)
-        end = random.randint(start+1, len(seq))
-        out_seq = seq[:start] + seq[end:]
+    elif action == "drop" and len(seq)>10:  # drop a section
+        if "," in seq:
+            out_seq = seq[:seq.index(",")]
+        elif "，" in seq:
+            out_seq = seq[:seq.index("，")]
+        else:
+            out_seq = out_seq
     elif action == "rand_drop" and len(seq)>10:  # randomly drop some characters.
         number_to_drop = random.randint(1, len(seq)//4)
         indices_to_drop = random.sample(range(len(seq)), number_to_drop)

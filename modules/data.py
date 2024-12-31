@@ -10,7 +10,7 @@ from copy import deepcopy
 from utils.common_utils import print_once
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from transformers import AutoTokenizer
-from configs.prompts import TRANS_PROMPT, LABEL_MARK
+from configs.prompts import TRANS_PROMPTS, LABEL_MARK, make_mt_instruction
 from configs.lang_codes import LangCodes
 
 from datasets import load_dataset
@@ -27,7 +27,7 @@ lang_codes = LangCodes()
 
 class TextDataset(Dataset):
     def __init__(self, data):
-        self.data = data 
+        self.data = data
 
     def __getitem__(self, index):
         return self.data[index]
@@ -35,9 +35,9 @@ class TextDataset(Dataset):
     def __len__(self,):
         return len(self.data)
 
-def read_json_or_jsonl_data(data_path):
+def read_rawline_data(data_path):
     print_once(f">>> load data from {data_path}")
-    if data_path.endswith(".json"):  # direct loading json files 
+    if data_path.endswith(".json"):  # direct loading json files
         with open(data_path, 'r') as f:
             data_list = json.load(f)
     elif data_path.endswith(".jsonl"):
@@ -70,11 +70,11 @@ def get_dataset(train_data_path:str, show_info=False):
     for root, dir, files in os.walk(train_data_path):
         for file in files:
             if file.endswith(".json") or file.endswith(".jsonl") or file.endswith(".parquet"):
-                train_data = read_json_or_jsonl_data(os.path.join(root,file))
+                train_data = read_rawline_data(os.path.join(root,file))
                 all_train_data.extend(train_data)
 
     if show_info:
-        print_once(f">>> loaded data INFO:")        
+        print_once(f">>> loaded data INFO:")
         print_once(f">>> {all_train_data[0]}")
 
     train_set = TextDataset(all_train_data)
@@ -85,13 +85,13 @@ def batch_padding(input_ids, tokenizer, padding='longest', max_length=None, pad_
         pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
     max_length = tokenizer.model_max_length if max_length is None else max_length
-    
+
     if padding == 'longest':
         max_input_length = max([len(inp_ids) for inp_ids in input_ids])
-        max_length = min(tokenizer.model_max_length, max_input_length)                
+        max_length = min(tokenizer.model_max_length, max_input_length)
 
     outputs = {"input_ids": [], "attention_mask": []}
-    for inp_ids in input_ids:        
+    for inp_ids in input_ids:
         attn_mask = [1] * len(inp_ids)
         if len(inp_ids) >= max_length:
             if tokenizer.truncation_side == 'left':
@@ -105,7 +105,7 @@ def batch_padding(input_ids, tokenizer, padding='longest', max_length=None, pad_
                 inp_ids = [pad_token_id] * (max_length - len(inp_ids)) + inp_ids
                 attn_mask = [0] * (max_length - len(attn_mask)) + attn_mask
             else:
-                inp_ids =  inp_ids + [pad_token_id] * (max_length - len(inp_ids)) 
+                inp_ids =  inp_ids + [pad_token_id] * (max_length - len(inp_ids))
                 attn_mask = attn_mask + [0] * (max_length - len(attn_mask))
 
         outputs['input_ids'].append(deepcopy(inp_ids))
@@ -115,22 +115,22 @@ def batch_padding(input_ids, tokenizer, padding='longest', max_length=None, pad_
 
 def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
     """
-    yields the following:
-    input_ids: long, the inputs, concat(instruct+input)
-    attention_mask: float, indicating valid input ids, same size as input_ids
-    labels: long, target outputs, for causalLM SFT, is the reference prepended with masked inputs 
-      concat(IGNORE_index*(len(input_ids)+1) + outputs)
+    process the inputs for transformers trainer.
 
-    add "for examples"
+    yields the following:
+        input_ids: long, the inputs, concat(instruct+input)
+        attention_mask: float, indicating valid input ids, same size as input_ids
+        labels: long, target outputs, for causalLM SFT, is the reference prepended with masked inputs
+                concat(IGNORE_index*(len(input_ids)+1) + outputs)
     """
-    
+
     input_ids, attention_mask, labels, weights, rewards = [], [], [], [], []
     if show_info:
         print_once(f">>> batch INFO:")
         print_once(batch)
 
     for item in batch:  # sample level processing (tokenize), with random context samples as inputs.
-        if "instruction" in item:  
+        if "instruction" in item:
             # alpaca data format with ["instruction", "input", "output"] region
             query = item["instruction"] + item["input"]+ LABEL_MARK
             output = item["output"]
@@ -145,21 +145,37 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
                 trg_lan_code, src_lan_code = valid_key
             else:
                 src_lan_code, trg_lan_code = valid_key
-            trans_prompt = random.choice(TRANS_PROMPT)
-            instruction = trans_prompt.replace("<trg_lan>", lang_codes.get_lang(trg_lan_code))
-            if "<src_lan>" in instruction:
-                instruction = instruction.replace("<src_lan>", lang_codes.get_lang(src_lan_code))
-            query = instruction.replace("<src_sent>", item[src_lan_code]) + LABEL_MARK
+            trans_prompt = random.choice(TRANS_PROMPTS)
+            instruction = trans_prompt.format(
+                src_lan=lang_codes.get_lang(src_lan_code),
+                trg_lan=lang_codes.get_lang(trg_lan_code),
+                src_sent=item[src_lan_code]
+            )
+            query = instruction
             output = item[trg_lan_code]
-
-        query_token_ids = tokenizer.encode(query, add_special_tokens=False)
-        target_token_ids = tokenizer.encode(output, add_special_tokens=False)
-        input_ids.append(
-            [tokenizer.bos_token_id] + deepcopy(query_token_ids) + deepcopy(target_token_ids) + [tokenizer.eos_token_id]
-        )
-        labels.append(
-            [IGNORE_INDEX] * (len(query_token_ids)+1) + deepcopy(target_token_ids)+ [tokenizer.eos_token_id]
-        )
+        if tokenizer.chat_template is not None:
+            formated_query = tokenizer.apply_chat_template(
+                    make_mt_instruction(query), tokenize=False,
+                    add_generation_prompt=True,
+                )  # already includes BOS token.
+            query_token_ids = tokenizer.encode(formated_query, add_special_tokens=False)
+            target_token_ids = tokenizer.encode(output, add_special_tokens=False)
+            input_ids.append(
+                deepcopy(query_token_ids) + [tokenizer.bos_token_id]+deepcopy(target_token_ids)+[tokenizer.eos_token_id]
+            )
+            labels.append(
+                [IGNORE_INDEX]*(len(query_token_ids)) + [tokenizer.bos_token_id]+deepcopy(target_token_ids)+[tokenizer.eos_token_id]
+            )
+        else:
+            query = query + LABEL_MARK
+            query_token_ids = tokenizer.encode(query, add_special_tokens=False)
+            target_token_ids = tokenizer.encode(output, add_special_tokens=False)
+            input_ids.append(
+                [tokenizer.bos_token_id] + deepcopy(query_token_ids) + deepcopy(target_token_ids) + [tokenizer.eos_token_id]
+            )
+            labels.append(
+                [IGNORE_INDEX] * (len(query_token_ids)+1) + deepcopy(target_token_ids)+ [tokenizer.eos_token_id]
+            )
 
     outputs = batch_padding(input_ids, tokenizer)  # returns padded input_ids and attention_masks.
     label_outputs = batch_padding(labels, tokenizer, pad_token_id=IGNORE_INDEX)
@@ -172,8 +188,8 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
     }
 
 def test_data_collector(
-        batch, tokenizer, 
-        src_lang_code="zh", trg_lang_code="en", 
+        batch, tokenizer,
+        src_lang_code="zh", trg_lang_code="en",
         show_info: bool = False
     ):
     # for raw data lines
@@ -181,17 +197,30 @@ def test_data_collector(
     if show_info:
         print_once(f">>> batch INFO:")
         print_once(batch)
-    
+
     for item in batch:
-        trans_prompt = "Please translate the <src_lan> into <trg_lan>: <src_sent> "
-        query =  trans_prompt.replace("<src_lan>", lang_codes.get_lang(src_lang_code)).replace("<trg_lan>",lang_codes.get_lang(trg_lang_code))     
+        trans_prompt = TRANS_PROMPTS[0]
         if lang_codes.get_lang(src_lang_code) == "Chinese":
             item = item.replace(" ", "").strip()
-        query = query.replace("<src_sent>", item) + LABEL_MARK
-        input_ids.append(
-            [tokenizer.bos_token_id] + tokenizer.encode(query, add_special_tokens=False)
+        query = trans_prompt.format(
+            src_lan=lang_codes.get_lang(src_lang_code),
+            trg_lan=lang_codes.get_lang(trg_lang_code),
+            src_sent=item.strip()
         )
-
+        if tokenizer.chat_template is not None:
+            # apply chat template automatically appends special tokens
+            prompted_query = tokenizer.apply_chat_template(
+                    make_mt_instruction(query), tokenize=False,
+                    add_generation_prompt=True
+                )
+            input_ids.append(
+                tokenizer.encode(prompted_query, add_special_tokens=False)
+            )
+        else:
+            query = query+LABEL_MARK
+            input_ids.append(
+                [tokenizer.bos_token_id] + tokenizer.encode(query, add_special_tokens=False)
+            )
     outputs = batch_padding(
         input_ids, tokenizer,max_length=tokenizer.model_max_length-256)  # returns padded input_ids and attention_masks.
 
@@ -265,8 +294,8 @@ def gen_rank_pair(df:DataFrame):
     out_data["chosen"] = preferred_list
     out_data["rejected"] = lesser_list
     out_df = DataFrame(out_data)
-    out_df = out_df.drop_duplicates().dropna()
-    out_df.reset_index(drop=True, inplace=True) # remove repeat and NaN data 
+    out_df = out_df.drop_duplicates()
+    out_df.reset_index(drop=True, inplace=True) # remove repeat and NaN data
     return out_df
 
 def build_multilingual_dataloader(

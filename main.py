@@ -16,7 +16,7 @@ from utils.unit_test import unit_test
 from modules.data import (
     get_dataset,
     sft_data_collactor,
-    read_json_or_jsonl_data,
+    read_rawline_data,
     read_parallel_data,
     build_multilingual_dataloader,
 )
@@ -31,7 +31,7 @@ from modules.inference import (
 from modules.agent import TransAgent
 from modules.metrics import BleurtScorer, CometScorer
 from configs.configs import DefaultTrainingArguments, peft_config
-from configs.prompts import LABEL_MARK, TRANS_PROMPT
+from configs.prompts import LABEL_MARK, TRANS_PROMPTS
 
 from peft import get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -93,7 +93,7 @@ def sft_LLM(args, force_lora=False):
     free_gpu()
     return
 
-def test(args, use_vllm=False):
+def test(args, src_lang_code, trg_lang_code, use_vllm=False):
     """ fast inference by vllm or multi-thread inference then merge
     :param use_vllm:
     if true, will merge the llm with adaptor in cache_dir for vllm inference (not compatible with 'torchrun' launch)
@@ -102,14 +102,16 @@ def test(args, use_vllm=False):
     the individual results are cached and merged.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    input_lists = read_json_or_jsonl_data(get_path(args, args.test_data_path))
+    input_lists = read_rawline_data(get_path(args, args.test_data_path))
     # input_lists = input_lists[:9]
     # for l in input_lists:
     #     print(l)
     # print(">>>>file len: ", len(input_lists))
+    output_file_name = args.test_data_path.split("/")[-1].split(".")[0]
+
     if use_vllm:
-        generation_out = vllm_inference(args, input_lists, src_lang_code="zh", trg_lang_code="en", override_cache=True)
-        with open(get_path(args, args.test_data_path)+".out", "w",encoding="utf-8") as out_file:
+        generation_out = vllm_inference(args, input_lists, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, override_cache=True)
+        with open(output_file_name +".out", "w",encoding="utf-8") as out_file:
             for item in generation_out:
                 l = item.outputs[0].text.replace("\n", " ").strip()
                 if LABEL_MARK in l:
@@ -118,9 +120,9 @@ def test(args, use_vllm=False):
                 else:
                     out_file.write(l.strip()+"\n")
     else:
-        merged_results = distributed_inference(args, input_lists, src_lang_code="zh", trg_lang_code="en", override_cache=True)
+        merged_results = distributed_inference(args, input_lists, src_lang_code=src_lang_code, trg_lang_code=trg_lang_code, override_cache=True)
         if dist.get_rank()==0:
-            with open(get_path(args, args.test_data_path)+".out", "w",encoding="utf-8") as out_file:
+            with open(output_file_name + ".out", "w",encoding="utf-8") as out_file:
                 for l in merged_results:
                     if LABEL_MARK in l:
                         mark_index=l.index(LABEL_MARK)
@@ -202,13 +204,14 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
     )
     print_once(f">>>> valid {valid_file_dir}...")
     extracted_df = extract_test(valid_file_dir, valid_type=valid_type)
-    trans_prompt = TRANS_PROMPT[0]
+    trans_prompt = TRANS_PROMPTS[0]
     raw_inputs = [item["input"] for item in extracted_df]
     input_lists = [
-        trans_prompt.replace("<src_lan>", lang_codes.get_lang(item["input_lang_code"]))
-        .replace("<trg_lan>", lang_codes.get_lang(item["output_lang_code"]))
-        .replace("<src_sent>", item["input"])
-        + LABEL_MARK
+        trans_prompt.format(
+            src_lan=lang_codes.get_lang(item["input_lang_code"]),
+            trg_lan=lang_codes.get_lang(item["output_lang_code"]),
+            src_sent=item["input"]
+        )+ LABEL_MARK
         for item in extracted_df
     ]
     target_lists = [item["output"] for item in extracted_df]  # cached for metric evaluation
@@ -310,21 +313,21 @@ def self_play(
         for file in df_path:
             distributed_df = pd.read_csv(file)
             for i in range(len(distributed_df)):
-                translate_prompt = random.choice(TRANS_PROMPT[:-1])  # tuning always use the standard mt prompt
+                translate_prompt = random.choice(TRANS_PROMPTS[:-1])  # tuning always use the standard mt prompt
                 in_line = distributed_df.at[i, 'prompt']
                 src_code = distributed_df.at[i, 'src_lang_code']
                 trg_code = distributed_df.at[i, 'trg_lang_code']
                 distributed_df.at[i, "prompt"] = (
-                    translate_prompt.replace(
-                        "<src_lan>", agent.supported_langs.get_lang(src_code)
+                    translate_prompt.format(
+                        src_lan = agent.supported_langs.get_lang(src_code),
+                        trg_lan = agent.supported_langs.get_lang(trg_code),
+                        src_sent = in_line
                     )
-                    .replace("<trg_lan>", agent.supported_langs.get_lang(trg_code))
-                    .replace("<src_sent>", in_line)
                 )
             collected_df.append(distributed_df)
         merged = pd.concat(collected_df, ignore_index=True)
-        merged = merged.drop_duplicates().dropna()
-        merged.reset_index(drop=True, inplace=True)
+        merged.fillna("", inplace=True) # re-fill the empty line
+        # merged.reset_index(drop=True, inplace=True)
         time_stamp = datetime.datetime.now().strftime("%Y-%m-%d")
         merge_fpath = os.path.join(
             agent.cache_dir, f"self_play_{str(train_round)}.{time_stamp}.csv"
@@ -341,11 +344,14 @@ def RL_update(args, train_round:int):
     cached_files = glob.glob(os.path.join(agent.cache_dir, f"self_play_{str(train_round)}*.csv"))
     cached_SP_dir = sorted(cached_files, key=lambda x: os.path.getmtime(x), reverse=True)[0]
     merged_df = pd.read_csv(cached_SP_dir)
+    merged_df.fillna("", inplace=True)
     tuning_dataset = Dataset(pa.Table.from_pandas(merged_df))
     print("loading RL finetune data.")
     start=time.time()
-    agent.update_policy(tuning_dataset)
+    rl_loss = agent.update_policy(tuning_dataset)
     end = time.time()
+    if dist.get_rank()==0:
+        wandb.log({"loss":rl_loss,"step": train_round+1})
 
     del agent, tuning_dataset, merged_df
     free_gpu()
@@ -358,7 +364,7 @@ if __name__=="__main__":
     parser = transformers.HfArgumentParser(DefaultTrainingArguments)  # subclass of ArgumentParser
     parser.add_argument(
         "-m", "--mode", type=str, default='SFT',
-        choices=['SFT', 'RL', "test", "valid", "air", "simulate"],
+        choices=['SFT', 'RL', "test", "valid", "air", "simulate", "debug_RL"],
         help="SFT (imitation learning with KL div) or RL"
     )
     parser.add_argument("--src_code", type=str, default="all", help="indicate src language type for validation")
@@ -369,23 +375,23 @@ if __name__=="__main__":
     os.environ["HF_DATASETS_CACHE"]=os.path.join(args.nas_base_path, "cache")
     os.environ["NCCL_DEBUG"]="INFO"
     if args.mode=="SFT":
-        # load_dataset(args.flores_script,"all", trust_remote_code=True)
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         sft_LLM(args)
     elif args.mode== "test":
+        src_lan_code = args.src_code
+        trg_lan_code = args.trg_code
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
-        test(args)
+        test(args, src_lan_code, trg_lan_code, use_vllm=True)
     elif args.mode== "valid":
         # dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         validate(
-            args, valid_type="x2x",
+            args, valid_type="en2x",
         )
     elif args.mode=="air":
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         vllm_inference_onair(args, override_cache=True)
     elif args.mode== "RL":
-        # load_dataset(args.flores_script,"all", trust_remote_code=True)
         dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
         src_lan_code = args.src_code
         trg_lan_code = args.trg_code
@@ -395,6 +401,7 @@ if __name__=="__main__":
         dist.barrier()
         if dist.get_rank()==0:
             wandb.init()
+            wandb.define_metric("loss", step_metric="step")
             wandb.define_metric("bleurt", step_metric="step")
             wandb.define_metric("comet", step_metric="step")
         validate_pair(
@@ -409,6 +416,26 @@ if __name__=="__main__":
         for train_round in range(200):
             self_play(args, train_round, trg_lang_codes=args.self_play_languages)
             dist.barrier()
+            RL_update(args, train_round)
+            dist.barrier()
+            validate_pair(
+                args, flores_script=args.flores_script,
+                src_lang_code=src_lan_code, trg_lang_code=trg_lan_code,
+                model_dir=os.path.join(get_path(args,args.output_dir), "_RL"),
+                global_step=train_round+1,
+            )
+    elif args.mode=="debug_RL":
+        dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
+        src_lan_code = args.src_code
+        trg_lan_code = args.trg_code
+        args = args = parser.parse_args_into_dataclasses()[0]
+        dist.barrier()
+        if dist.get_rank()==0:
+            wandb.init()
+            wandb.define_metric("loss", step_metric="step")
+            wandb.define_metric("bleurt", step_metric="step")
+            wandb.define_metric("comet", step_metric="step")
+        for train_round in range(40):
             RL_update(args, train_round)
             dist.barrier()
             validate_pair(

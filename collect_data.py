@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-import os, json, re
+import os, json, re,glob
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import random
 
 from datasets import load_dataset
-from configs.prompts import TRANS_PROMPT
+from configs.prompts import TRANS_PROMPTS
 from configs.lang_codes import ISO2wFamily_ISO2codes
 from bleurt_pytorch import BleurtTokenizer, BleurtForSequenceClassification
 from lingua import LanguageDetectorBuilder
@@ -30,15 +30,15 @@ def generate_alpaca_data(data_path, max_sample=-1):
                 break
             if random.uniform(0,1)>0.5:  # too large data will result in parquet error
                 dataset.append({
-                    "instruction": TRANS_PROMPT.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang),
-                    "input": s_l.replace(" ", "").strip(),
+                    "instruction": TRANS_PROMPTS[0].format(src_lan=src_lang,trg_lan=trg_lang,src_sent=""),
+                    "input": s_l.strip(),
                     "output": t_l.strip()
                 })
             else:
                 dataset.append({
-                    "instruction": TRANS_PROMPT.replace("<src_lan>", trg_lang).replace("<trg_lan>", src_lang),
+                    "instruction": TRANS_PROMPTS[0].format(src_lan=trg_lang,trg_lan=src_lang, src_sent=""),
                     "input": t_l.strip(),
-                    "output": s_l.replace(" ", "").strip()
+                    "output": s_l.strip()
                 })
             sample_count+=1
         print(">>>>",sample_count)
@@ -55,31 +55,14 @@ def generate_alpaca_test_data(data_path):
         sample_count = 0
         for s_l in src_lines:
             data.append({
-                "instruction": TRANS_PROMPT.replace("<src_lan>", src_lang).replace("<trg_lan>", trg_lang),
-                "input": s_l.replace(" ", "").strip(),
+                "instruction": TRANS_PROMPTS[0].format(src_lan=src_lang, trg_lan=trg_lang, src_sent=""),
+                "input": s_l.strip(),
             })
             sample_count+=1
         print(">>>>", sample_count)
         json.dump(data, out_file, ensure_ascii=False, indent=2)
     return os.path.join(base_data_path, data_path+".json")
 
-def generate_parquet_data(src_file, src_lan_code, trg_file, trg_lan_code, output_file):
-    # read the parallel files
-    # extract the schema from a parquet file
-    # yield according to schema
-    with open(src_file, "r") as src_lines, open(trg_file, "r") as trg_lines:
-        full_data = []
-        for src_l, trg_l in zip(src_lines, trg_lines):
-            full_data.append({src_lan_code:src_l.strip(), trg_lan_code:trg_l.strip()})
-        df = pd.DataFrame({"translation": full_data})
-        df.to_parquet(output_file, index=False)
-        # batch = pa.RecordBatch.from_arrays(
-        #     [src_array, trg_array],
-        #     schema=array_schema
-        # )
-        # out_table=pa.Table.from_batches([batch])
-        # pq.write_table(out_table, output_file)
-    return
 
 def process_flores_data(flores_script, output_file, sample_size=-1):
     """
@@ -93,10 +76,11 @@ def process_flores_data(flores_script, output_file, sample_size=-1):
 
     """
     # lang_codes = ["eng", "fra","zho_simpl", "deu", "rus", "kor", "jpn", "ara", "heb", "swh" ] # ,
-    lang_codes = ["eng_Latn", "fra_Latn", "zho_Hans", "deu_Latn", "rus_Cyrl", "kor_Hang", "jpn_Jpan", "arb_Arab", "heb_Hebr", "swh_Latn"]
+    lang_codes = ["eng_Latn", "fra_Latn","ita_Latn", "zho_Hans", "deu_Latn", "por_Latn", "arb_Arab", "hin_Deva","spa_Latn", "tha_Thai"]
+    lang_codes = list(ISO2wFamily_ISO2codes.keys())
     # flores_data = load_dataset(flores_script, "all")["dev"]  # load all languages
-    clense_pair = ["eng_Latn", "zho_Hans"]
-    # clense_pair = []
+    # clense_pair = ["eng_Latn", "zho_Hans"]
+    clense_pair = []
     full_data = []
     for i in range(len(lang_codes)-1):
         src_lan_code = lang_codes[i]
@@ -109,16 +93,22 @@ def process_flores_data(flores_script, output_file, sample_size=-1):
             else:
                 print(f"collect {src_lan_code} -> {trg_lan_code}")
                 trg_col = load_dataset(flores_script, trg_lan_code, trust_remote_code=True)["dev"]["sentence"]
-                pairs_count = len(lang_codes)*(len(lang_codes)-1)//2
-                size4pair = max(1, sample_size//pairs_count) if sample_size>0 else len(src_col)
-                total_pairs = [(src,trg) for src,trg in zip(src_col, trg_col) ]
-                random_pairs = random.sample(total_pairs, size4pair)
-                for src_l, trg_l in random_pairs:
+                if sample_size>0:
+                    pairs_count = len(lang_codes)*(len(lang_codes)-1)//2
+                    size4pair = max(1, sample_size//pairs_count) if sample_size>0 else len(src_col)
+                    total_pairs = [(src,trg) for src,trg in zip(src_col, trg_col) ]
+                    chosen_pairs = random.sample(total_pairs, size4pair)
+                else:
+                    chosen_pairs = [(src,trg) for src,trg in zip(src_col, trg_col) ]
+                for src_l, trg_l in chosen_pairs:
                     full_data.append({src_lan_code:src_l.strip(), trg_lan_code:trg_l.strip()})
+            print(">>> len >>>", len(full_data))
     print(">> total >>", len(full_data))
     df = pd.DataFrame({"translation": full_data})
-    df.to_json(output_file, orient='records', lines=True)
+    table = pa.Table.from_pandas(df)
+    pq.write_table(table, output_file)
     return
+# process_flores_data("flores200.py", output_file="flores200.parquet")
 
 def process_flores_instruct(flores_script, output_file, sample_size=-1):
     all_data= load_dataset(flores_script, "all", trust_remote_code=True)["dev"]
@@ -150,6 +140,7 @@ def process_flores_instruct(flores_script, output_file, sample_size=-1):
     pq.write_table(table, output_file)
     # df.to_parquet(output_file, index=False)
     return
+# process_flores_instruct("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
 
 def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file="flores_test"):
     """
@@ -176,6 +167,7 @@ def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_file
     df.to_parquet(f"{output_file}_{src_lang_code}-{trg_lang_code}.parquet", index=False)
     print(f"finsh at {output_file}_{src_lang_code}-{trg_lang_code}.parquet")
     return
+# process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "zho_Hans","arb_Arab")
 
 def sample_parquet_data(parquet_file, sample_size):
     df = pd.read_parquet(parquet_file)
@@ -190,9 +182,6 @@ def sample_parquet_data(parquet_file, sample_size):
 # )
 # alpaca_data_path=generate_alpaca_data("/mnt/bn/v2024/dataset/nist_zh-en/")
 # alpaca_test_path = generate_alpaca_test_data("/mnt/bn/v2024/dataset/nist_zh-en/test/mt08.src")
-# process_flores_data("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet", sample_size=-1)
-# process_flores_instruct("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", output_file="flores200.parquet")
-# process_flores_test("/mnt/bn/v2024/dataset/flores200_dataset/flores.py", "zho_Hans","arb_Arab")
 
 def clense_data_line(data_path, output_path):
     with open(data_path, "r") as in_file, open(output_path, "w")as out_file:
@@ -231,7 +220,7 @@ def process_hin_data(data_path):
             if len(line.split(" ")) >15:
                 output_file.write(line.strip() + "\n")
     return
-process_hin_data("hindi_story_news.json")
+# process_hin_data("hindi_story_news.json")
 
 def calculate_bleurt(ref_list, cand_list):
     bleurt_path="/mnt/bn/v2024/models/huggingface/bleurt20/"
@@ -260,5 +249,21 @@ def merge_mono_data(dir="/mnt/bn/v2024/dataset/monolingual/rus_Cyrl"):
         random.shuffle(news_lines)
         for l in news_lines:
             out_file.write(l+"\n")
-
+    return
 # merge_mono_data("/mnt/bn/v2024/dataset/monolingual/zho_Hans")
+
+def merge_rank_data(dir="./"):
+    """
+    collect all the self-play data under a dir and merge to a single file
+    """
+    total_df = []
+    files = glob.glob(os.path.join(dir, f"self_play_*.csv"))
+    for f in files:
+        df = pd.read_csv(f)
+        total_df.append(df)
+    total_df = pd.concat(total_df, ignore_index=True)
+    total_df.fillna("", inplace=True)
+    total_df.to_csv(os.path.join(dir, "total_self_play.csv"), index=False)
+    print("merged rank data")
+    return
+# merge_rank_data("/mnt/bn/v2024/cache/llama3.1_trans0/trans0_agent")
