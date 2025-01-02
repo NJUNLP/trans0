@@ -31,7 +31,7 @@ from modules.inference import (
 from modules.agent import TransAgent
 from modules.metrics import BleurtScorer, CometScorer
 from configs.configs import DefaultTrainingArguments, peft_config
-from configs.prompts import LABEL_MARK, TRANS_PROMPTS
+from configs.prompts import LABEL_MARK, TRANS_PROMPTS, make_mt_instruction
 
 from peft import get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -187,11 +187,9 @@ def validate_pair(args,  flores_script, src_lang_code, trg_lang_code, model_dir=
 
 def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, global_step=None):
     """
-    validate by dev_data_path file,
-    generate the 
-    log the validation by global_step when it's not None
+    validate by dev_data_path file, log the validation by global_step when it's not None
     :param valid_type: the type of the validation, ["en-x", "x-x", "x-en", "all"]
-    :param dev_data_path: a parallel data file. If None, will extract flores.py for multi-lingual parallel test 
+    :param dev_data_path: a parallel data file. If None, will extract flores.py for multi-lingual parallel test
     :param valid_type: the type of the validation, ["input_lang_code", "input", "output_lang_code", "output"]
     :param model_dir: the model to validate, if None, validate the model in args.output_dir
     """
@@ -204,14 +202,19 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
     )
     print_once(f">>>> valid {valid_file_dir}...")
     extracted_df = extract_test(valid_file_dir, valid_type=valid_type)
-    trans_prompt = TRANS_PROMPTS[0]
+    if "ALMA" in args.output_dir:
+        trans_prompt = TRANS_PROMPTS[1]
+    elif "Tower" in args.output_dir:
+        trans_prompt = TRANS_PROMPTS[2]
+    else:
+        trans_prompt = TRANS_PROMPTS[0]
     raw_inputs = [item["input"] for item in extracted_df]
     input_lists = [
         trans_prompt.format(
             src_lan=lang_codes.get_lang(item["input_lang_code"]),
             trg_lan=lang_codes.get_lang(item["output_lang_code"]),
             src_sent=item["input"]
-        )+ LABEL_MARK
+        )
         for item in extracted_df
     ]
     target_lists = [item["output"] for item in extracted_df]  # cached for metric evaluation
@@ -219,13 +222,24 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
     # prepare VLLM inference
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"]="spawn"
     sampling_params = SamplingParams(
-        n=1,  # best of 
-        temperature=0.,
+        n=1, temperature=0.,
         max_tokens=args.max_new_tokens)
     llm = prepare_vllm_inference(
         args, model_dir=model_dir,
         override_cache=True, cache_suffix=valid_type
     )
+    tokenizer = llm.get_tokenizer()
+    if tokenizer.chat_template is not None:
+        input_lists = [
+            tokenizer.apply_chat_template(
+                make_mt_instruction(input_l), tokenize=False, 
+                add_generation_prompt=True
+            ) for input_l in input_lists
+        ]
+    elif "ALMA" not in args.output_dir:
+        input_lists = [
+            input_l+LABEL_MARK for input_l in input_lists
+        ]
     generation_out = llm.generate(
         input_lists, sampling_params=sampling_params)
     cached_out_lists = [] # cached for metric evaluation
@@ -234,6 +248,8 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
         for item in generation_out:
             for item_out in item.outputs:
                 l = item_out.text
+                if "</LABEL>" in l:
+                    l = l.replace("</LABEL>", "")
                 if LABEL_MARK in l:
                     mark_index=l.index(LABEL_MARK)
                     out_file.write(l.strip()[mark_index:].replace(LABEL_MARK, "")+"\n")
@@ -242,10 +258,11 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
                     out_file.write(l.strip()+"\n")
                     cached_out_lists.append(l.strip())
     print("finished")
+    print(">> test snipet>>", input_lists[0], cached_out_lists[0])
     del llm, sampling_params
     dist.destroy_process_group()
     free_gpu()
-    # load the scores 
+    # load the scores
     bleurt_scorer = BleurtScorer(ckpt_path=get_path(args, args.bleurt_ckpt))
     bleurt_score = bleurt_scorer.score(target_lists, cached_out_lists)
     del bleurt_scorer
@@ -255,7 +272,7 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
     comet_score = comet_scorer.score(raw_inputs, cached_out_lists)
     del comet_scorer
     free_gpu()
-
+    print(valid_type," finished")
     print("bleurt=%.4f"%bleurt_score)
     print("comet=%.4f"%comet_score)
 
@@ -386,7 +403,7 @@ if __name__=="__main__":
         # dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         validate(
-            args, valid_type="en2x",
+            args, valid_type="x2en",
         )
     elif args.mode=="air":
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
@@ -450,5 +467,3 @@ if __name__=="__main__":
         unit_test(args)
     else:
         print(">>> undefined mode, exit")
-
-

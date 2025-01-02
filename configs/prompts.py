@@ -2,7 +2,8 @@
 # for translation instruction, must contains the target language
 TRANS_PROMPTS = [
     "Please translate the {src_lan} into {trg_lan}: {src_sent}",
-    "Translate this from {src_lan} to {trg_lan}:\n{src_lan}: {src_sent}\n{trg_lan}: ",
+    "Translate this from {src_lan} to {trg_lan}:\n{src_lan}: {src_sent}\n{trg_lan}:",  # ALMA prompt
+    "Translate the following text from {src_lan} into {trg_lan}.\n{src_lan}: {src_sent}\n{trg_lan}:",   # tower_instruct prompt
     "{src_sent} in {src_lan} can be translated to {trg_lan} as: ",
     "{src_lan}: {src_sent} = {trg_lan}: ",
     "{src_lan}: {src_sent}\n{trg_lan}: ",
@@ -12,6 +13,7 @@ TRANS_PROMPTS = [
 def make_mt_instruction(instruction:str, tower_instruction:bool=False):
     """
     make instructions for instruct-version MT-agent tuning
+    turn on the tower_instruction flag to use the tower_instruct prompt
     """
     if tower_instruction:
         message = [

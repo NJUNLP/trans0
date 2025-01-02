@@ -42,7 +42,7 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.2_baseline" torchrun --nproc_per_n
     --cache_dir cache/llama3.2_debug/ \
     --output_dir /mnt/bn/v2024/ckpts/llama3.2_debug/ \
     --deepspeed configs/ds_z2_config.json \
-    --learning_rate 2e-6 \
+    --learning_rate 3e-6 \
     --run_name 'llama3.2_baseline' \
     --report_to 'wandb' \
     --bf16 True --tf32 True 2>&1 |tee contine.log
@@ -64,7 +64,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python3 main.py \
     --cache_dir cache/llama3.2_debug/  \
     --deepspeed configs/ds_z2_config.json \
     --nas_base_path  /mnt/bn/v2024/ \
-    --tf32 True --bf16 True
+    --tf32 True --bf16 True    
 
 CUDA_VISIBLE_DEVICES="0,1" python3 main.py \
     --mode air \

@@ -93,3 +93,48 @@ def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv
     return float(count)/len(df)
 
 # validate_preference("/mnt/bn/v2024/cache/llama3-mega_clax/trans0_agent/zho_Hans-eng_Latn.18.self_play_68.csv")
+
+from vllm import LLM, SamplingParams
+import torch
+def tower_infer(target_model_path ):
+    def make_mt_instruction(instruction:str):
+        message = [
+            {"role": "user", "content": instruction},
+        ]
+        return message
+
+    sampling_params = SamplingParams(
+        n=1, temperature=0, max_tokens=512)
+    llm = LLM(
+            model = target_model_path, dtype=torch.bfloat16,
+            tokenizer= target_model_path,  # the finetuned vocabulary
+            tensor_parallel_size=torch.cuda.device_count(),
+            # gpu_memory_utilization=gpu_utilization,
+        )
+
+    trans_prompt="Translate the following text from {src_lan} into {trg_lan}.\n{src_lan}: {src_sent}\n{trg_lan}:"  # tower_instruct prompt
+    input_lan = "German"
+    output_lan = "Portuguese"
+    input_sent =  "„Wir haben jetzt 4 Monate alte Mäuse, die Diabetes hatten und jetzt keinen mehr haben“, fügte er hinzu."
+    input_lists = [
+        trans_prompt.format(
+            src_lan=input_lan,
+            trg_lan=output_lan,
+            src_sent=input_sent
+        )
+    ]
+    tokenizer = llm.get_tokenizer()
+    input_lists = [
+        tokenizer.apply_chat_template(
+            make_mt_instruction(input_l), tokenize=False, 
+            add_generation_prompt=True
+        ) for input_l in input_lists
+    ]
+    generation_out = llm.generate(
+        input_lists, sampling_params=sampling_params)
+    
+    for item in generation_out:
+        for item_out in item.outputs:
+            l = item_out.text
+            print(l)
+# tower_infer("/mnt/bn/v2024/models/huggingface/TowerInstruct-7B-v0.2")

@@ -74,6 +74,7 @@ def vllm_inference_onair(args, override_cache=False):
                 for item_out in item.outputs:
                     # l = item_out.text.replace("\n", " ").strip()
                     l = item_out.text
+                    print(">>> model input: >>>", input_l)
                     if LABEL_MARK in l:
                         mark_index=l.index(LABEL_MARK)
                         print(l.strip()[mark_index:].replace(LABEL_MARK, ""))
