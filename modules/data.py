@@ -1,19 +1,25 @@
 # -*- coding: utf-8 -*-
-import json, os, random
-import torch
-from typing import List
-import pandas as pd
-from pandas import DataFrame
-import numpy as np
-
+import json
+import os
+import random
+import sys
 from copy import deepcopy
-from utils.common_utils import print_once
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
-from transformers import AutoTokenizer
-from configs.prompts import TRANS_PROMPTS, LABEL_MARK, make_mt_instruction
-from configs.lang_codes import LangCodes
+from typing import List
 
+import numpy as np
+import pandas as pd
+import torch
 from datasets import load_dataset
+from pandas import DataFrame
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from transformers import AutoTokenizer
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
+from configs.lang_codes import LangCodes
+from configs.prompts import LABEL_MARK, TRANS_PROMPTS, make_mt_instruction
+from utils.common_utils import print_once
+
 IGNORE_INDEX=-100
 
 SEP_TOKEN="<sep>"
