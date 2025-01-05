@@ -10,14 +10,9 @@ LANGS = {
     "zho_Hans": "Chinese",
     "eng_Latn": "English",
     "deu_Latn": "German",
-    "fra_Latn": "French",
     "ita_Latn": "Italian",
     "por_Latn": "Portuguese",
-    "hin_Deva": "Hindi",
-    "spa_Latn": "Spanish",
-    "tha_Thai": "Thai",
-    "arb_Arab": "Arabic",
-    "isl_Latn": "Icelandic",
+    "rus_Cyrl": "Russian",
 }
 
 MODELS = [
@@ -118,7 +113,9 @@ def calculate_model_score_accelerated(model_name: str):
             cum_ref_list.append(ref_list)
             cum_pred_list.append(pred_list)
 
-    bleurt_mt_scores = bleurt_scorer.batch_score(cum_ref_list, cum_pred_list)
+    bleurt_mt_scores = bleurt_scorer.batch_score(
+        cum_ref_list, cum_pred_list, verbose=True
+    )
     comet_mt_scores = comet_scorer.batch_score(cum_src_list, cum_pred_list)
     for bleurt_score, comet_score, (src_lang, trg_lang) in zip(
         bleurt_mt_scores, comet_mt_scores, lang_pairs
@@ -139,7 +136,7 @@ def calculate_model_score_accelerated(model_name: str):
 
 
 if __name__ == "__main__":
-    bleurt_scorer = BleurtScorer()
-    comet_scorer = CometScorer()
+    bleurt_scorer = BleurtScorer(batch_size=16)
+    comet_scorer = CometScorer(batch_size=32)
     for model in MODELS:
         calculate_model_score_accelerated(model)

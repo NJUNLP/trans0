@@ -17,15 +17,11 @@ LANGS = {
     "zho_Hans": "Chinese",
     "eng_Latn": "English",
     "deu_Latn": "German",
-    "fra_Latn": "French",
     "ita_Latn": "Italian",
     "por_Latn": "Portuguese",
-    "hin_Deva": "Hindi",
-    "spa_Latn": "Spanish",
-    "tha_Thai": "Thai",
-    "arb_Arab": "Arabic",
-    "isl_Latn": "Icelandic",
+    "rus_Cyrl": "Russian",
 }
+
 MODELS = [
     "Llama-3.2-1B-Instruct",
     "Llama-3.2-3B-Instruct",
@@ -59,7 +55,10 @@ def build_input(src_lang: str, trg_lang: str, tokenizer: AutoTokenizer):
     ]
     input_contexts = [
         [
-            {"role": "system", "content": "You are a professional translator."},
+            {
+                "role": "system",
+                "content": "You are a multilingual translator mastering several languages.",
+            },
             {"role": "user", "content": sentence},
         ]
         for sentence in input_sentences
