@@ -20,7 +20,7 @@ def make_mt_instruction(instruction:str, tower_instruction:bool=False):
             {"role": "user", "content": instruction},
         ]
     else:
-        message=[
+        message=[#You are a professional translator.
             {"role": "system","content": "You are a multilingual translator mastering several languages."},
             {"role": "user", "content": instruction},
         ]

@@ -17,9 +17,14 @@ LANGS = {
     "zho_Hans": "Chinese",
     "eng_Latn": "English",
     "deu_Latn": "German",
+    "fra_Latn": "French",
     "ita_Latn": "Italian",
     "por_Latn": "Portuguese",
-    "rus_Cyrl": "Russian",
+    "hin_Deva": "Hindi",
+    "spa_Latn": "Spanish",
+    "tha_Thai": "Thai",
+    "arb_Arab": "Arabic",
+    "isl_Latn": "Icelandic",
 }
 
 MODELS = [

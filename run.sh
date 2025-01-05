@@ -49,7 +49,7 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.2_baseline" torchrun --nproc_per_n
 
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python3 main.py \
     --mode valid \
-    --output_dir /mnt/bn/v2024/ckpts/baselines/llama3.1_instruct_sft/ \
+    --output_dir /mnt/bn/v2024/ckpts/llama3.1_instruct_sft/ \
     --self_play_languages "deu_Latn" "por_Latn" "ita_Latn" "eng_Latn" "zho_Hans" "rus_Cyrl" \
     --cache_dir cache/llama3.1_instruct_sft/ --flores_script "flores200.py"  \
     --deepspeed configs/ds_z2_config.json \
@@ -87,7 +87,8 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.1_debug_RL" torchrun --nproc_per_n
 
 CUDA_VISIBLE_DEVICES="0" torchrun --nproc_per_node=1 --master_port=8008 main.py \
     --mode simulate --mcts_sample_size 5 \
-    --output_dir /mnt/bn/v2024/ckpts/llama3-mega_sft1e-3/_RL  \
+    --output_dir /mnt/bn/v2024/ckpts/llama3.1_trans0  \
+    --self_play_languages "deu_Latn" "por_Latn" "ita_Latn" "eng_Latn" "zho_Hans" "rus_Cyrl" \
     --nas_base_path /mnt/bn/v2024/ \
-    --cache_dir cache/debug/ \
+    --cache_dir cache/llama3.1_trans0/ \
     --bf16 True --tf32 True 2>&1 |tee mc_tree.log

@@ -42,10 +42,11 @@ def unit_test(args):
     yidl to parquet lists
     """
     # src_list, trg_list = read_parallel_data(args.dev_data_path, src_lang_code = "zh", trg_lang_code = "en")
-    input_line = "If you always harm others, the chickens' gonna come home to roost."  # eng_Latn
+    input_line = "If you always harm others, the chickens gonna come home to roost."  # eng_Latn
     # input_line = "Putins Verrücktes Spiel"  # deu_Latn
     # input_line="التحدي الجديد لمنتدى دافوس" # arb_Arab
-    # input_line = "我世祖文皇帝，神文圣武，继承大统，应天合人，法尧禅舜，处中国以治万 邦，这岂非天心人意乎？"  # zho_Hans
+    # input_line = "我世祖文皇帝，神文圣武，继承大统，应天合人，法尧禅舜，处中国以治万邦，这岂非天心人意乎？"  # zho_Hans
+    # input_line = "你牛逼，真有两把刷子！"
     # input_line="Syriza stand einst für eine Abkehr vom Euro"  # deu_Latn
     agent = TransAgent(args)
     mc_tree = agent.MCTS(
