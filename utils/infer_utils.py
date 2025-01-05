@@ -1,5 +1,6 @@
-from datasets import load_dataset
 import pandas as pd
+from datasets import load_dataset
+
 
 def process_flores_test(flores_script, src_lang_code, trg_lang_code, output_dir):
     """
@@ -98,4 +99,3 @@ def extract_test(data_path:str, valid_type:str="all"):
     else:
         print(">>> invalid valid_type, return None.")
         return None
-

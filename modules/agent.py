@@ -1,27 +1,38 @@
 # -*- coding: utf-8 -*-
-import torch, random, os, glob
-import numpy as np
+import glob
+import os
+import random
+import sys
 from typing import List, OrderedDict
-from pandas import DataFrame
 
+import numpy as np
+import pandas as pd
+import torch
+import torch.distributed as dist
+from datasets import Dataset
 from lingua import LanguageDetectorBuilder
+from pandas import DataFrame
+from peft import get_peft_model
+from sacrebleu.metrics import BLEU, CHRF
 from torch.utils.data import DataLoader
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from trl import DPOConfig, DPOTrainer
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
-from configs.prompts import TRANS_PROMPTS, LABEL_MARK, TRANS_CONTEXT_PROMPT
-from configs.lang_codes import LangCodes
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from configs.configs import sp_peft_config
+from configs.lang_codes import LangCodes
+from configs.prompts import LABEL_MARK, TRANS_CONTEXT_PROMPT, TRANS_PROMPTS
 from modules.data import gen_rank_pair
 from modules.metrics import BleurtScorer
-from utils.common_utils import set_special_tokens
-from sacrebleu.metrics import BLEU, CHRF
-from datasets import Dataset
-import torch.distributed as dist
-import pandas as pd
-
-from peft import get_peft_model
 from modules.NaryTree import *
-from utils.common_utils import print_once,free_gpu,aggregate_rejection, get_path
+from utils.common_utils import (
+    aggregate_rejection,
+    free_gpu,
+    get_path,
+    print_once,
+    set_special_tokens,
+)
+
 
 class TransAgent:
     # wrap the methods and functions for trans0.

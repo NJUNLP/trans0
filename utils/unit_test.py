@@ -1,17 +1,24 @@
-from modules.agent import TransAgent
-import time, os, glob
+import glob
 import json
+import os
+import sys
+import time
 from collections import OrderedDict
+
 import numpy as np
-import pyarrow as pa
-from modules.RewardModel import RewardModel, reward_model_dir
-from modules.data import read_parallel_data
-from datasets import Dataset
 import pandas as pd
+import pyarrow as pa
 import torch.distributed as dist
-from utils.common_utils import free_gpu
-from configs.prompts import RM_PROMPT
+from datasets import Dataset
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from configs.lang_codes import LangCodes
+from configs.prompts import RM_PROMPT
+from modules.agent import TransAgent
+from modules.data import read_parallel_data
+from modules.RewardModel import RewardModel, reward_model_dir
+from utils.common_utils import free_gpu
+
 
 def RL_update(args, train_round:int):
     agent = TransAgent(args, train=train_round)
@@ -21,7 +28,7 @@ def RL_update(args, train_round:int):
     merged_df = pd.read_csv(cached_SP_dir)
     tuning_dataset = Dataset(pa.Table.from_pandas(merged_df))
     print("loading RL finetune data.")
-    agent.update_policy(tuning_dataset) 
+    agent.update_policy(tuning_dataset)
     end = time.time()
 
     del agent, tuning_dataset, merged_df
@@ -32,7 +39,7 @@ def RL_update(args, train_round:int):
 def unit_test(args):
     """
     input the parallel data, calculate the MC values, with generation scores
-    yidl to parquet lists 
+    yidl to parquet lists
     """
     # src_list, trg_list = read_parallel_data(args.dev_data_path, src_lang_code = "zh", trg_lang_code = "en")
     input_line = "If you always harm others, the chickens' gonna come home to roost."  # eng_Latn
@@ -42,8 +49,10 @@ def unit_test(args):
     # input_line="Syriza stand einst für eine Abkehr vom Euro"  # deu_Latn
     agent = TransAgent(args)
     mc_tree = agent.MCTS(
-        src_sent=input_line, 
-        src_lang_code="eng_Latn", trg_lang_code="zho_Hans", max_simulation_depth=2
+        src_sent=input_line,
+        src_lang_code="eng_Latn",
+        trg_lang_code="zho_Hans",
+        max_simulation_depth=2,
     )
     item_list = mc_tree.layer_traversal(value_type="utility")
     root_data, root_value = item_list.pop(0)
@@ -65,12 +74,12 @@ def unit_test(args):
     #     RL_update(args, train_round=i)
     #     input()
 
-
     # df = pd.DataFrame(results)
     # df.to_csv(args.dev_data_path.split("/")[-1]+".log", index=False)
-    return 
+    return
 
-def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv  
+
+def validate_preference(self_play_data: str):  # **-**.*.self_play*.csv
     df = pd.read_csv(self_play_data).dropna()
     rm_model = RewardModel(reward_model_dir)
     supported_langs = LangCodes()
@@ -81,7 +90,7 @@ def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv
         chosen_seq = df.iloc[i]["chosen"]
         reject_seq = df.iloc[i]["rejected"]
         input_line = df.iloc[i]["prompt"]
-        
+
         query = RM_PROMPT.replace("<src_lan>", supported_langs.get_lang(src_lang_code)).\
             replace("<trg_lan>", supported_langs.get_lang(trg_lang_code)).replace("<src_sent>", input_line)
 
@@ -92,10 +101,13 @@ def validate_preference(self_play_data:str):   # **-**.*.self_play*.csv
     print(count, len(df), float(count)/len(df))
     return float(count)/len(df)
 
+
 # validate_preference("/mnt/bn/v2024/cache/llama3-mega_clax/trans0_agent/zho_Hans-eng_Latn.18.self_play_68.csv")
 
-from vllm import LLM, SamplingParams
 import torch
+from vllm import LLM, SamplingParams
+
+
 def tower_infer(target_model_path ):
     def make_mt_instruction(instruction:str):
         message = [
@@ -126,13 +138,13 @@ def tower_infer(target_model_path ):
     tokenizer = llm.get_tokenizer()
     input_lists = [
         tokenizer.apply_chat_template(
-            make_mt_instruction(input_l), tokenize=False, 
-            add_generation_prompt=True
-        ) for input_l in input_lists
+            make_mt_instruction(input_l), tokenize=False, add_generation_prompt=True
+        )
+        for input_l in input_lists
     ]
     generation_out = llm.generate(
         input_lists, sampling_params=sampling_params)
-    
+
     for item in generation_out:
         for item_out in item.outputs:
             l = item_out.text
