@@ -10,20 +10,23 @@ TRANS_PROMPTS = [
     "Explain the following {src_lan} sentence in {trg_lan}: {src_sent}",
 ]
 
-def make_mt_instruction(instruction:str, tower_instruction:bool=False):
+def make_mt_instruction(instruction:str, llm_path:str):
     """
     make instructions for instruct-version MT-agent tuning
     turn on the tower_instruction flag to use the tower_instruct prompt
     """
-    if tower_instruction:
+    llm_path = llm_path.lower()
+    if "tower" in llm_path or "qwen" in llm_path:
         message = [
             {"role": "user", "content": instruction},
         ]
-    else:
+    elif "llama" in llm_path:
         message=[#You are a professional translator.
             {"role": "system","content": "You are a multilingual translator mastering several languages."},
             {"role": "user", "content": instruction},
         ]
+    else:
+        print(f"error: tokenizer path {llm_path} for chat_template not supported")
     return message
 
 # similar sentence prompt

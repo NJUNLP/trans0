@@ -25,6 +25,7 @@ from modules.inference import (
     lang_codes,
     vllm_inference,
     distributed_inference,
+    distributed_inference_by_mcts,
     vllm_inference_onair,
     prepare_vllm_inference,
 )
@@ -37,7 +38,6 @@ from peft import get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from bleurt_pytorch import BleurtForSequenceClassification, BleurtTokenizer
-import comet
 """
 sft a huggingface LLM
 """
@@ -45,28 +45,35 @@ sft a huggingface LLM
 
 os.environ["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:False"
 
-def sft_LLM(args, force_lora=False):
+def sft_LLM(args, llm_path_4tune=None, force_lora=False):
     # build dataset
     train_dataset = get_dataset(get_path(args, args.train_data_path), show_info=args.debug_mode)
 
+    if llm_path_4tune is None:
+        target_llm_path =  get_path(args, args.llm_path)
+        save_path = get_path(args, args.output_dir)
+    else:
+        target_llm_path = get_path(args, llm_path_4tune)
+        save_path = get_path(args, llm_path_4tune)
     # reload LLM, the tokenizer and model used for training
     tokenizer = AutoTokenizer.from_pretrained(
-        get_path(args, args.llm_path),
+        target_llm_path,
         model_max_length=args.max_length,  # controls the maximum PE
         padding_side = args.padding_side,
         truncation_size = args.truncation_side,
         trust_remote_code=True
     )
-    llm = AutoModelForCausalLM.from_pretrained(get_path(args, args.llm_path), trust_remote_code=True)
+    llm = AutoModelForCausalLM.from_pretrained(target_llm_path, trust_remote_code=True)
     llm, tokenizer = set_special_tokens(llm, tokenizer, show_info=args.debug_mode)
     if args.use_lora or force_lora:  # always lora for initialization
         llm = get_peft_model(llm, peft_config=peft_config)
     llm.config.use_cache= False
     print_once(args)
-
     llm.is_parallelizable=True
     llm.model_parallel=True
 
+    total_device_count = dist.get_world_size()
+    args.gradient_accumulation_steps = int(args.instruct_batch_size //(args.per_device_train_batch_size * total_device_count))
     trainer = Trainer(
         model=llm,
         tokenizer=tokenizer,
@@ -74,21 +81,29 @@ def sft_LLM(args, force_lora=False):
         train_dataset=train_dataset,
         data_collator=lambda x: sft_data_collactor(x, tokenizer, show_info=args.debug_mode)
     )
-    train_results = trainer.train(
-        resume_from_checkpoint=True if os.path.exists(os.path.join(get_path(args, args.output_dir), "trainer_state.json")) else None
-    )
-    metrics = train_results.metrics
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
-    trainer.save_state()
+    if llm_path_4tune is None:  # this is a cold-started model from base llm
+        print("ignite instruction.")
+        train_results = trainer.train(
+            resume_from_checkpoint=True if os.path.exists(os.path.join(save_path, "trainer_state.json")) else None
+        )
+        metrics = train_results.metrics
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        trainer.save_state()
+    else:
+        print("re-ignite instruction.")
+        # post training with SFT.
+        train_results = trainer.train(
+            resume_from_checkpoint=False
+        )
     if dist.get_rank()==0:
         if args.use_lora or force_lora:
             trainer.save_model(output_dir=get_path(args, args.cache_dir))  # cache the lora adaptor for debug
             llm = llm.merge_and_unload()
-        llm.save_pretrained(get_path(args, args.output_dir),safe_serialization=True)
-        tokenizer.save_pretrained(get_path(args, args.output_dir))
+        llm.save_pretrained(save_path, safe_serialization=True)
+        tokenizer.save_pretrained(save_path)
 
-    trainer.accelerator.free_memory() # memory leak: release the gpu by accelerator!
+    trainer.accelerator.free_memory()
     del llm, tokenizer, train_dataset, train_results, trainer
     free_gpu()
     return
@@ -196,15 +211,16 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
     if not os.path.exists(os.path.join(get_path(args, args.cache_dir))):
         os.makedirs(os.path.join(get_path(args, args.cache_dir)))
     # collect and cache the mixed test-data from flores.py
-    valid_file_dir = process_mix_flores_test(
+    process_mix_flores_test(
         args.flores_script, args.self_play_languages,
-        output_dir= os.path.join(get_path(args, args.cache_dir), "mix_test.parquet")
+        output_dir= os.path.join(get_path(args, args.cache_dir), f"mix_test_{valid_type}.parquet")
     )
+    valid_file_dir = os.path.join(get_path(args, args.cache_dir), f"mix_test_{valid_type}.parquet")
     print_once(f">>>> valid {valid_file_dir}...")
     extracted_df = extract_test(valid_file_dir, valid_type=valid_type)
-    if "ALMA" in args.output_dir:
+    if "alma" in args.output_dir.lower():
         trans_prompt = TRANS_PROMPTS[1]
-    elif "Tower" in args.output_dir:
+    elif "tower" in args.output_dir.lower():
         trans_prompt = TRANS_PROMPTS[2]
     else:
         trans_prompt = TRANS_PROMPTS[0]
@@ -232,11 +248,11 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
     if tokenizer.chat_template is not None:
         input_lists = [
             tokenizer.apply_chat_template(
-                make_mt_instruction(input_l), tokenize=False, 
+                make_mt_instruction(input_l, llm_path=args.llm_path), tokenize=False,
                 add_generation_prompt=True
             ) for input_l in input_lists
         ]
-    elif "ALMA" not in args.output_dir:
+    elif "alma" not in args.output_dir.lower():
         input_lists = [
             input_l+LABEL_MARK for input_l in input_lists
         ]
@@ -276,6 +292,69 @@ def validate(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, glob
     print("bleurt=%.4f"%bleurt_score)
     print("comet=%.4f"%comet_score)
 
+    return
+
+def validate_by_mcts(args, valid_type:str="en2x",dev_data_path=None,model_dir=None, global_step=None):
+    """
+    validate by dev_data_path file, log the validation by global_step when it's not None
+    generate translation by mcts.
+
+    :param valid_type: the type of the validation, ["en-x", "x-x", "x-en", "all"]
+    :param dev_data_path: a parallel data file. If None, will extract flores.py for multi-lingual parallel test
+    :param valid_type: the type of the validation, ["input_lang_code", "input", "output_lang_code", "output"]
+    :param model_dir: the model to validate, if None, validate the model in args.output_dir
+    """
+    if dist.get_rank()==0:
+        if not os.path.exists(os.path.join(get_path(args, args.cache_dir))):
+            os.makedirs(os.path.join(get_path(args, args.cache_dir)))
+        # collect and cache the mixed test-data from flores.py
+        process_mix_flores_test(
+            args.flores_script, args.self_play_languages,
+            output_dir= os.path.join(get_path(args, args.cache_dir), f"mix_test_{valid_type}.parquet")
+        )
+    dist.barrier()
+    valid_file_dir=os.path.join(get_path(args, args.cache_dir), f"mix_test_{valid_type}.parquet")
+    print_once(f">>>> valid {valid_file_dir}...")
+    extracted_df = extract_test(valid_file_dir, valid_type=valid_type)
+    raw_inputs = [item["input"] for item in extracted_df] # cached for metric evaluation
+    target_lists = [item["output"] for item in extracted_df]
+    input_lists = [
+        item["input"] +"<FUNC>"+item["input_lang_code"]+"<FUNC>"+item["output_lang_code"] for item in extracted_df
+    ]
+    # raw_inputs = raw_inputs[:21]    # TODO:for debug
+    # target_lists = target_lists[:21]  # TODO:for debug
+    # input_lists = input_lists[:21]  # TODO:for debug
+    cached_out_lists = distributed_inference_by_mcts(
+        args, llm_dir=model_dir, input_lists=input_lists,
+        override_cache=True, cache_suffix=valid_type
+    )
+    if dist.get_rank()==0:
+        print("finished")
+        cached_out_path = os.path.join(get_path(args, args.cache_dir), f"{valid_type}.out")
+        with open(cached_out_path, "w", encoding="utf-8") as out_file:
+            for l in cached_out_lists:
+                if "</LABEL>" in l:
+                    l = l.replace("</LABEL>", "")
+                if LABEL_MARK in l:
+                    mark_index=l.index(LABEL_MARK)
+                    out_file.write(l.strip()[mark_index:].replace(LABEL_MARK, "")+"\n")
+                else:
+                    out_file.write(l.strip()+"\n")
+        print(">> test snipet>>", raw_inputs[0], cached_out_lists[0])
+
+        # load the scores
+        bleurt_scorer = BleurtScorer(ckpt_path=get_path(args, args.bleurt_ckpt))
+        bleurt_score = bleurt_scorer.score(target_lists, cached_out_lists)
+        del bleurt_scorer
+        free_gpu()
+
+        comet_scorer = CometScorer(ckpt_path=get_path(args, args.comet_ckpt))
+        comet_score = comet_scorer.score(raw_inputs, cached_out_lists)
+        del comet_scorer
+        free_gpu()
+        print(valid_type," finished")
+        print("bleurt=%.4f"%bleurt_score)
+        print("comet=%.4f"%comet_score)
     return
 
 def self_play(
@@ -381,16 +460,17 @@ if __name__=="__main__":
     parser = transformers.HfArgumentParser(DefaultTrainingArguments)  # subclass of ArgumentParser
     parser.add_argument(
         "-m", "--mode", type=str, default='SFT',
-        choices=['SFT', 'RL', "test", "valid", "air", "simulate", "debug_RL"],
+        choices=['SFT', 'RL', "test", "valid","valid++", "air", "simulate", "debug_RL"],
         help="SFT (imitation learning with KL div) or RL"
     )
+    parser.add_argument("--valid_type", type=str, default="x2en", help="valid type for valid and valid++ mode")
     parser.add_argument("--src_code", type=str, default="all", help="indicate src language type for validation")
     parser.add_argument("--trg_code", type=str, default="all", help="indicate trg language type for validation")
     args = parser.parse_args()  # inject add_argument parts
 
     os.environ["HF_HOME"] = os.path.join(args.nas_base_path, "cache")
     os.environ["HF_DATASETS_CACHE"]=os.path.join(args.nas_base_path, "cache")
-    os.environ["NCCL_DEBUG"]="INFO"
+    os.environ["NCCL_DEBUG"]="ERROR"
     if args.mode=="SFT":
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         sft_LLM(args)
@@ -401,10 +481,18 @@ if __name__=="__main__":
         test(args, src_lan_code, trg_lan_code, use_vllm=True)
     elif args.mode== "valid":
         # dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
+        valid_type=args.valid_type
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         validate(
-            args, valid_type="x2en",
+            args, valid_type=valid_type,
         )
+        # validate_pair(args,flores_script=args.flores_script,
+        #     src_lang_code="deu_Latn", trg_lang_code="zho_Hans")
+    elif args.mode== "valid++":
+        dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
+        valid_type=args.valid_type
+        args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
+        validate_by_mcts(args, valid_type=valid_type)
     elif args.mode=="air":
         args = parser.parse_args_into_dataclasses()[0]  # initialize default huggingface parameters
         vllm_inference_onair(args, override_cache=True)
@@ -441,6 +529,15 @@ if __name__=="__main__":
                 model_dir=os.path.join(get_path(args,args.output_dir), "_RL"),
                 global_step=train_round+1,
             )
+            # sft_LLM(args,llm_path_4tune=os.path.join(get_path(args,args.output_dir), "_RL"), force_lora=True)
+            # validate_pair(
+            #     args, flores_script=args.flores_script,
+            #     src_lang_code=src_lan_code, trg_lang_code=trg_lan_code,
+            #     model_dir=os.path.join(get_path(args,args.output_dir), "_RL"),
+            #     global_step=train_round+1,
+            # )
+            # break
+
     elif args.mode=="debug_RL":
         dist.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
         src_lan_code = args.src_code

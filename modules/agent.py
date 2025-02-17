@@ -21,9 +21,9 @@ from trl import DPOConfig, DPOTrainer
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from configs.configs import sp_peft_config
 from configs.lang_codes import LangCodes
-from configs.prompts import LABEL_MARK, TRANS_CONTEXT_PROMPT, TRANS_PROMPTS
+from configs.prompts import LABEL_MARK, TRANS_CONTEXT_PROMPT, TRANS_PROMPTS, make_mt_instruction
 from modules.data import gen_rank_pair
-from modules.metrics import BleurtScorer
+from modules.metrics import BleurtScorer, CometScorer
 from modules.NaryTree import *
 from utils.common_utils import (
     aggregate_rejection,
@@ -32,7 +32,6 @@ from utils.common_utils import (
     print_once,
     set_special_tokens,
 )
-
 
 class TransAgent:
     # wrap the methods and functions for trans0.
@@ -111,7 +110,10 @@ class TransAgent:
         elif self.metric_type=="bleu":
             self.scorer = BLEU()
         elif self.metric_type=="bleurt":
-            self.scorer = BleurtScorer(get_path(args,args.bleurt_ckpt), batch_size=5)
+            self.scorer = BleurtScorer(get_path(args,args.bleurt_ckpt), batch_size=25)
+        elif self.metric_type=="comet":
+            self.scorer = CometScorer(get_path(args, args.comet_ckpt), batch_size=25)
+            self.scorer.load_cuda(self.model.device)
         else:
             raise ValueError("Invalid metric_type. Please choose from 'chrf', 'bleu', or 'bleurt'.")
 
@@ -132,6 +134,7 @@ class TransAgent:
             pad_token_id=self.tokenizer.pad_token_id,
             num_return_sequences=self.sample_size,
         )  # for sampling
+        total_device_count = dist.get_world_size()
         self.pref_train_config = DPOConfig(
             logging_steps=args.logging_steps,
             max_length=args.max_length,
@@ -142,13 +145,20 @@ class TransAgent:
             loss_type=args.rl_loss_type, #cpo_alpha=.0,
             per_device_train_batch_size=1,
             deepspeed=args.deepspeed,
-            gradient_accumulation_steps=int(args.gradient_accumulation_steps/2),
+            gradient_accumulation_steps=int(args.rl_batch_size//total_device_count),
             resume_from_checkpoint=True,
             save_strategy="no",
             remove_unused_columns=args.remove_unused_columns,
             bf16=args.bf16,
             tf32=args.tf32
         )
+        # default translate prompt for MCTS inference and RL update
+        if "alma" in args.output_dir.lower():
+            self.default_prompt  = TRANS_PROMPTS[1]
+        elif "tower" in args.output_dir.lower():
+            self.default_prompt  = TRANS_PROMPTS[2]
+        else:
+            self.default_prompt  = TRANS_PROMPTS[0]
 
         self.supported_langs = LangCodes()
 
@@ -168,7 +178,7 @@ class TransAgent:
         """
         wraping the score interface to evaluate reconstructions return a list of scores
         """
-        if self.metric_type =="bleurt":
+        if self.metric_type in ["bleurt","comet"]:
             with torch.no_grad():
                 # one-on-one bleurt with a list of score output
                 res1 = self.scorer.score(references, candidates, keepdims=True)
@@ -262,10 +272,9 @@ class TransAgent:
     #             "scores":scores,
     #             "values":rewards}
 
-
     def MCTS(
             self, src_sent:str,
-            src_lang_code:str, trg_lang_code:str,
+            src_lang_code:str, trg_lang_code:str,show_info=True,
             MC_count:int=20, max_simulation_depth=2,
         )-> NaryTree:
         """
@@ -307,16 +316,18 @@ class TransAgent:
             best_node_previous = mc_tree.root  # top best nodes for context.
             for count in range(MC_count):
                 current_node = mc_tree.select()  # select a leaf for expansion.
-                print(f">>>> {count} node:", current_node.state["data"])
+                if show_info:
+                    print(f">>>> {count} node:", current_node.state["data"])
                 if best_node_previous == current_node or best_node_previous.state["recon"]==None:
-                    # expand with Markov translation process
+                    # mutation by reconstruction
                     # (explored by given back-translated paraphrase, or whitespace paraphrase)
                     explored_trgs, _ = self.step_explore(
                         llm, current_node.state["recon"],
                         src_lang_code=root_lang_code, trg_lang_code=trg_lang_code,
-                        trans_context=None
+                        trans_context=None, sample_mode=True
                     )
                 else:
+                    # merging nodes
                     best_history=[
                         {best_node_previous.state["lang_code"]: best_node_previous.state["data"],
                         root_lang_code: best_node_previous.state["recon"]},
@@ -351,7 +362,7 @@ class TransAgent:
                 best_node_previous = mc_tree.get_best(mc_tree.root)
         return mc_tree
 
-    def yield_tree2rank(self, mc_tree:NaryTree, value_type="utility", sort_type="select")->DataFrame:
+    def yield_tree2rank(self, mc_tree:NaryTree, threshold=0.0, value_type="utility", sort_type="select")->DataFrame:
         """
         yield the tree results to a ranking dataframe for training
         a MCT in layerswise traversal example (ancesters are ahead of descendants):
@@ -363,6 +374,7 @@ class TransAgent:
         :param value_type: rank by value: ["utility", "value", "visit", "uct"], default is cumulated utility.
         by selection sort, the swaps during sort is collected as preference pairs.
         return the preference pairs
+        :param threshold: handcrafted threshold for preferred
         """
         item_list = mc_tree.layer_traversal(value_type=value_type)
         root_data, root_value=item_list.pop(0)  # the root is valued
@@ -385,13 +397,15 @@ class TransAgent:
         trg_lang_codes = []
         prompts = []
         winrates = []  # record the winrate of the prefered over rejected
+        if threshold==0.0:
+            threshold = root_value  # default threshold by root value.
         src_lang_code=mc_tree.root.state["lang_code"]
         trg_lang_code=mc_tree.root.children[0].state["lang_code"]
         for i in range(len(cleaned_list)):  # select-sort for preference pairs
             item_i, value_i = cleaned_list[i]
             for j in range(i+1, len(cleaned_list)):
                 item_j, value_j = cleaned_list[j]
-                if value_j>value_i:  # needs swap --> a preference pair
+                if value_j>value_i and value_j>threshold:  # needs swap --> a preference pair
                     # exclude the erroreous lang_code preference.
                     if self.detect_lang(item_j) == desired_language and "[COT]" not in item_j:
                         chosen.append(item_j)
@@ -446,7 +460,7 @@ class TransAgent:
         simulated_inputs = [trg2value]  # starts with the trg2value as list
         simulated_inputs_lang = [trg_lang]
         with torch.no_grad():
-            translate_prompt= TRANS_PROMPTS[0]
+            translate_prompt = TRANS_PROMPTS[0]
             # direct reconstruction of a dummy src
             temp=translate_prompt.format(src_lan=trg_lang,trg_lan=src_lang,src_sent=trg2value)+LABEL_MARK
             dummy_src = self.default_inference(llm, [temp], sample_mode=False)[0][0]
@@ -477,11 +491,11 @@ class TransAgent:
             # reciprocal reconstruction above threshold (early-death) as simulated rewards
             recon_value = np.array(self.score(references=[origin_src]*len(simulated_inputs), candidates=simulated_inputs))
             recon_value_dummy = np.array(self.score(references=[dummy_src]*len(simulated_inputs), candidates=simulated_inputs))
-            total_value = np.concatenate((recon_value, recon_value_dummy), axis=0)
-            total_value[total_value<semantic_threshod] = 0.
+            recon_value[recon_value<semantic_threshod] = 0.  # straightforward translation
+            recon_value_dummy[recon_value_dummy<semantic_threshod] = 0.  # explainative translation
 
-            best_recon = simulated_inputs[recon_value.argmax()]
-            mean_value = np.mean(total_value)
+            best_recon = simulated_inputs[(recon_value_dummy+recon_value).argmax()]  #
+            mean_value = max(np.mean(recon_value), np.mean(recon_value_dummy))
             # print(">>> simulate:", mean_value, " ==> ",best_recon)
         return best_recon, mean_value
 
@@ -506,11 +520,11 @@ class TransAgent:
         trg_lang = self.supported_langs.get_lang(trg_lang_code)
         translate_prompt = random.choice(TRANS_PROMPTS)
         trans_input = translate_prompt.format(
-            src_lan=src_lang, trg_lan=trg_lang, src_sent=src_sent)+LABEL_MARK
+            src_lan=src_lang, trg_lan=trg_lang, src_sent=src_sent)
         if trans_context is not None:  # merging the exploration via context
             assert len(trans_context)==2, "trans_context must be two dicts of language pairs"
             translate_prompt = random.choice(TRANS_PROMPTS)
-            contexted_input = translate_prompt.format(src_lan=src_lang, trg_lan=trg_lang, src_sent=src_sent)+LABEL_MARK
+            contexted_input = translate_prompt.format(src_lan=src_lang, trg_lan=trg_lang, src_sent=src_sent)
             for item in trans_context:  # traverse the context
                 context_prompt = random.choice(TRANS_CONTEXT_PROMPT)
                 context = context_prompt.format(
@@ -549,7 +563,19 @@ class TransAgent:
         """
         llm.eval()
         with torch.no_grad():
-            model_inputs = self.tokenizer(inputs_list, return_tensors="pt", padding=True).to(llm.device)
+            if self.tokenizer.chat_template is not None:
+                formated_inputs_list = [self.tokenizer.apply_chat_template(
+                    make_mt_instruction(l, llm_path=self.tokenizer.name_or_path),
+                    tokenize=False, add_generation_prompt=True) for l in inputs_list]
+                model_inputs = self.tokenizer(formated_inputs_list, return_tensors="pt", padding=True).to(llm.device)
+            else:
+                if "alma" in self.tokenizer.name_or_path.lower():
+                    pass 
+                elif "tower" in self.tokenizer.name_or_path.lower():
+                    pass
+                else:
+                    inputs_list = [l+LABEL_MARK for l in inputs_list] 
+                model_inputs = self.tokenizer(inputs_list, return_tensors="pt", padding=True).to(llm.device)
             if sample_mode:
                 generation_out = llm.generate(
                     **model_inputs, generation_config=self.sample_config,

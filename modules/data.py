@@ -161,16 +161,16 @@ def sft_data_collactor(batch, tokenizer:AutoTokenizer, show_info:bool):
             output = item[trg_lan_code]
         if tokenizer.chat_template is not None:
             formated_query = tokenizer.apply_chat_template(
-                    make_mt_instruction(query), tokenize=False,
+                    make_mt_instruction(query, llm_path=tokenizer.name_or_path), tokenize=False,
                     add_generation_prompt=True,
-                )  # already includes BOS token.
+                )  # already includes BOS token and generation_prompt token for target sequence.
             query_token_ids = tokenizer.encode(formated_query, add_special_tokens=False)
             target_token_ids = tokenizer.encode(output, add_special_tokens=False)
             input_ids.append(
-                deepcopy(query_token_ids) + [tokenizer.bos_token_id]+deepcopy(target_token_ids)+[tokenizer.eos_token_id]
+                deepcopy(query_token_ids) +deepcopy(target_token_ids)+[tokenizer.eos_token_id]
             )
             labels.append(
-                [IGNORE_INDEX]*(len(query_token_ids)) + [tokenizer.bos_token_id]+deepcopy(target_token_ids)+[tokenizer.eos_token_id]
+                [IGNORE_INDEX]*(len(query_token_ids)) +deepcopy(target_token_ids)+[tokenizer.eos_token_id]
             )
         else:
             query = query + LABEL_MARK
@@ -205,7 +205,13 @@ def test_data_collector(
         print_once(batch)
 
     for item in batch:
-        trans_prompt = TRANS_PROMPTS[0]
+        if "tower" in tokenizer.name_or_path.lower():
+            trans_prompt=TRANS_PROMPTS[2]
+        elif "alma" in tokenizer.name_or_path.lower(): 
+            trans_prompt=TRANS_PROMPTS[1]
+        else: 
+            trans_prompt = TRANS_PROMPTS[0]
+
         if lang_codes.get_lang(src_lang_code) == "Chinese":
             item = item.replace(" ", "").strip()
         query = trans_prompt.format(
@@ -216,14 +222,15 @@ def test_data_collector(
         if tokenizer.chat_template is not None:
             # apply chat template automatically appends special tokens
             prompted_query = tokenizer.apply_chat_template(
-                    make_mt_instruction(query), tokenize=False,
+                    make_mt_instruction(query, llm_path=tokenizer.name_or_path), tokenize=False,
                     add_generation_prompt=True
                 )
             input_ids.append(
                 tokenizer.encode(prompted_query, add_special_tokens=False)
             )
         else:
-            query = query+LABEL_MARK
+            if "alma" not in tokenizer.name_or_path.lower():
+                query = query+LABEL_MARK
             input_ids.append(
                 [tokenizer.bos_token_id] + tokenizer.encode(query, add_special_tokens=False)
             )

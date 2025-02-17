@@ -2,7 +2,7 @@ from typing import List
 from pathlib import Path
 from tqdm import trange
 import numpy as np
-import torch
+import torch, os
 from utils.common_utils import truncate_encoded
 
 def calculate_cum_size(arrays):
@@ -93,24 +93,26 @@ class BleurtScorer(AbstractScorer):
         return avg_scores
 
 class CometScorer(AbstractScorer):
-
     def __init__(self, ckpt_path: Path, batch_size: int = 128):
         import comet
-
-        self.comet_scorer = comet.load_from_checkpoint(ckpt_path, reload_hparams=True).eval()
+        os.environ["TOKENIZERS_PARALLELISM"] = 'false'
+        self.comet_scorer = comet.load_from_checkpoint(ckpt_path, reload_hparams=True).cuda().eval()
         self.batch_size = batch_size
 
-    def load_cuda(self):
-        self.comet_scorer = self.comet_scorer.to("cuda")
+    def load_cuda(self, device=None):
+        if device==None:
+            self.comet_scorer.to("cuda")
+        else:
+            self.comet_scorer.to(device)
 
     def offload_cuda(self):
-        self.comet_scorer = self.comet_scorer.to("cpu")
+        self.comet_scorer.to("cpu")
         torch.cuda.empty_cache()
 
     def _score(self, references: List[str], hypothesizes: List[str]):
         data = [{"src": ref, "mt": hypo} for ref, hypo in zip(references, hypothesizes)]
         comet_output = self.comet_scorer.predict(
-            data, batch_size=self.batch_size, gpus=1
+            data, batch_size=self.batch_size, gpus=1, progress_bar=False
         )
         scores = comet_output.scores
         return scores
@@ -122,9 +124,9 @@ class CometScorer(AbstractScorer):
         """
         scores = self._score(references, hypothesizes)
         if keepdims:
-            return scores
+            return np.array(scores)
         else:
-            score = np.mean(scores)
+            score = np.array(scores).mean()
             return score
 
     def batch_score(self, references: List[List[str]], hypothesizes: List[List[str]]):

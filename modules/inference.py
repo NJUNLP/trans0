@@ -2,17 +2,21 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from peft import PeftModel
 from vllm import LLM, SamplingParams
+from collections import OrderedDict
 from configs.prompts import TRANS_PROMPTS, LABEL_MARK, make_mt_instruction
 from configs.lang_codes import LangCodes
 from utils.common_utils import print_once, set_special_tokens, check_available_memory, get_path
 from modules.data import read_rawline_data
+from modules.agent import TransAgent
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from modules.data import test_data_collector
-
+from utils.infer_utils import process_flores_test, process_mix_flores_test, extract_test
+import numpy as np
 import torch.distributed as dist
-import torch, time
+import torch, time, json
 import gc, os, glob
+import pandas as pd
 
 lang_codes = LangCodes()
 
@@ -68,7 +72,7 @@ def vllm_inference_onair(args, override_cache=False):
             tokenizer = llm.get_tokenizer()
             if tokenizer.chat_template is not None:
                 input_l = tokenizer.apply_chat_template(
-                    make_mt_instruction(input_l), tokenize=False, add_generation_prompt=True)
+                    make_mt_instruction(input_l, llm_path=args.output_dir), tokenize=False, add_generation_prompt=True)
             generation_out = llm.generate([input_l], sampling_params)
             for item in generation_out:
                 for item_out in item.outputs:
@@ -105,7 +109,7 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
     if tokenizer.chat_template is not None:
         input_ls = [
             tokenizer.apply_chat_template(
-                    make_mt_instruction(l), tokenize=False,
+                    make_mt_instruction(l, llm_path=args.output_dir), tokenize=False,
                     add_generation_prompt=True)
             for l in input_ls
         ]
@@ -117,16 +121,19 @@ def vllm_inference(args, inputs_list, src_lang_code, trg_lang_code, override_cac
         input_ls, sampling_params=sampling_params)
     return generation_out
 
-def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, override_cache=False):
+def distributed_inference(args, llm_dir, input_lists, src_lang_code, trg_lang_code, override_cache=False,cache_suffix=""):
     """
     :param input_lists: inputs are raw lines ["line1", "line2",...]
-    :param dir: the model for validation, default using the model in args.output_dir
+    :param llm_dir: the model for validation, default using the model in args.output_dir
     """
     # if args.test_data_path is not None:
     #     cache_path = os.path.join(get_path(args, args.cache_dir), args.test_data_path.split("/")[-1].strip())
     # else:
     #     cache_path = os.path.join(get_path(args, args.cache_dir), args.dev_data_path.split("/")[-1].strip())
-    cache_path = os.path.join(get_path(args, args.cache_dir), "cached_inference")
+    if cache_suffix=="":
+        cache_path = os.path.join(get_path(args, args.cache_dir), "cached_inference")
+    else:
+        cache_path = os.path.join(get_path(args, args.cache_dir), "cached_inference_"+cache_suffix)
     if override_cache:
         os.system(f"rm -rf %s"%cache_path)
     try:
@@ -134,7 +141,7 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
     except FileExistsError:
         pass
 
-    target_model_path = get_path(args, args.output_dir) if dir is None else dir
+    target_model_path = get_path(args, args.output_dir) if llm_dir is None else llm_dir
     print_once(f">>> validate trg output_dir >>>:{target_model_path}" )
     # reload the LLM ckpt from the output_dir
     tokenizer = AutoTokenizer.from_pretrained(
@@ -164,7 +171,6 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
 
     # specific test dataset by distributed sampler for evaluation
     sampler = torch.utils.data.distributed.DistributedSampler(input_lists, shuffle=False)
-
     data_loader = DataLoader(
         input_lists, shuffle=False,
         batch_size=args.per_device_eval_batch_size,
@@ -221,4 +227,106 @@ def distributed_inference(args, dir, input_lists, src_lang_code, trg_lang_code, 
                     break
             if len(merged_results)>=len(input_lists) or all(not sublist for sublist in results_for_each_file):
                 break
+    return merged_results
+
+def distributed_inference_by_mcts(args, llm_dir, input_lists,  override_cache=False, cache_suffix=""):
+    """
+    :param input_lists: inputs are raw lines ["line1", "line2",...]
+    :param llm_dir: the model for validation, default using the model in args.output_dir
+    """
+    if cache_suffix=="":
+        cache_path = os.path.join(get_path(args, args.cache_dir), "cached_inference")
+    else:
+        cache_path = os.path.join(get_path(args, args.cache_dir), "cached_inference_"+cache_suffix)
+    if dist.get_rank()==0:
+        if override_cache:
+            os.system(f"rm -rf %s"%cache_path)
+        try:
+            os.makedirs(cache_path, exist_ok=True)
+        except FileExistsError:
+            pass
+
+    target_model_path = get_path(args, args.output_dir) if llm_dir is None else llm_dir    
+    print_once(f">>> validate trg output_dir >>>:{target_model_path}" )
+    # reload the LLM ckpt for mcts 
+    agent = TransAgent(args)
+
+    # specific test dataset by distributed sampler for evaluation
+    sampler = torch.utils.data.distributed.DistributedSampler(input_lists, shuffle=False)
+    data_loader = DataLoader(
+        input_lists, shuffle=False,
+        batch_size=args.per_device_eval_batch_size,
+        sampler=sampler)
+    dist_outs = []
+    dist_preference_dfs = []
+    progress_bar = tqdm(range(len(data_loader)), disable=(dist.get_rank() != 0))
+    for _, batch_lines in enumerate(data_loader):
+        progress_bar.update(1)
+        for item in batch_lines:
+            processed_line = item.split("<FUNC>")
+            mc_tree = agent.MCTS(
+                src_sent=processed_line[0],
+                src_lang_code=processed_line[1],
+                trg_lang_code=processed_line[2],
+                show_info=False
+            )
+            item_list = mc_tree.layer_traversal(value_type="utility")
+            root_data, root_value = item_list.pop(0)
+            cleaned_dict = OrderedDict()
+            for item_data, item_value in item_list:
+                if item_data not in cleaned_dict:
+                    cleaned_dict[item_data] = [item_value]
+                else:
+                    cleaned_dict[item_data].append(item_value)
+            cleaned_list = [(item_data, (np.array(item_value)).sum()) for item_data, item_value in cleaned_dict.items()]
+            # for item_data, item_value in cleaned_list:
+            #     print(f"{item_value}:{item_data}")
+            best_result = max(cleaned_list, key=lambda x:x[1]) # max item value 
+            print(f"{root_data} ===> {best_result[0]}", end=" ")
+            print(processed_line[2])
+            dist_outs.append(best_result[0])
+            df=agent.yield_tree2rank(mc_tree, threshold=root_value, value_type="utility")
+            dist_preference_dfs.append(df)
+    local_df = pd.concat(dist_preference_dfs, ignore_index=True)
+    save_path = os.path.join(
+        cache_path, f"preference_{dist.get_rank()}.csv"
+    )
+    local_df.to_csv(save_path, index=False)
+
+    with open(os.path.join(cache_path, f"rank_{dist.get_rank()}" ), "w") as cache_file:
+        print(">>>> cache to rank", dist.get_rank())
+        for l in dist_outs:
+            cache_file.write(l+ "\n")
+    torch.cuda.empty_cache()
+    dist.barrier()   # wait for all threads to finish
+
+    merged_results = []
+    if dist.get_rank()==0:  # merge by the first thread
+        # collect files
+        cache_paths = glob.glob(os.path.join(cache_path, "rank_*"))
+        sorted_paths = sorted(cache_paths, key=lambda x:int(x.split("rank_")[1]))
+        results_for_each_file = []
+        for res_path in sorted_paths:
+            new_results = read_rawline_data(res_path)
+            results_for_each_file.append(new_results)
+        while True:
+            for sublist in results_for_each_file:
+                if sublist:
+                    if len(merged_results)>= len(input_lists):
+                        break
+                    merged_results.append(sublist[0])
+                    sublist.pop(0)
+                else:
+                    break
+            if len(merged_results)>=len(input_lists) or all(not sublist for sublist in results_for_each_file):
+                break
+
+        df_path=glob.glob(os.path.join(cache_path, "preference_*"))
+        collected_df = []
+        for file in df_path:
+            collected_df.append(pd.read_csv(file))
+        merged_df = pd.concat(collected_df, ignore_index=True)
+        merged_df.fillna("", inplace=True)
+        merged_df.to_csv(os.path.join(cache_path, "total_preference.csv"), index=False)    
+    print(">>merged_results>>:",merged_results)
     return merged_results

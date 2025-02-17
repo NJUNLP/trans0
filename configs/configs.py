@@ -114,14 +114,22 @@ class DefaultTrainingArguments(TrainingArguments):
     lm_sft_coeff: float = field(default=0., metadata={"help": "the coefficient for SFT data language modeling loss."})            
     lm_kl_coeff: float = field(default=0., metadata={"help": "the coefficient of kl regularizer."})
 
+    instruct_batch_size: int = field(
+        default=1024,
+        metadata={"help": "the instruct batch_size"}
+    )
+    rl_batch_size: int = field(
+        default=1024,
+        metadata={"help": "the overall training batch_size"}
+    )
     per_device_train_batch_size: int = field(
         default=2,
         metadata={"help": "training batch on each device"}
     )   
-    gradient_accumulation_steps: int = field(
-        default=64,
-        metadata={"help": "accumualate to simulate large batch"}
-    )
+    # gradient_accumulation_steps: int = field(
+    #     default=64,
+    #     metadata={"help": "accumualate to simulate large batch"}
+    # )
 
     valid_data_size: int = field(
         default=0,

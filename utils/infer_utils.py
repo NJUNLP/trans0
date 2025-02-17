@@ -33,7 +33,7 @@ def process_mix_flores_test(flores_script, self_play_langs, output_dir, per_n_sa
     collect the all the relevant translation pairs (self_play_langs) from flores200
     process_mix_flores_test(flores_script="flores200.py",
             self_play_langs=["eng_Latn", "zho_Hans","deu_Latn", "arb_Arab", "ita_Latn"],
-            output_dir="flores200_mix.parquet", per_n_sample=100)
+            output_dir="??.parquet", per_n_sample=100)
 
     :param flores_script: the flores.py file
     :param output_dir: dir to save the collect translation pairs.

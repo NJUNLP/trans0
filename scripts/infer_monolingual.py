@@ -86,7 +86,7 @@ def generate(args, lang: str, llm, model_dir=None):
     if tokenizer.chat_template is not None:
         input_lists = [
             tokenizer.apply_chat_template(
-                make_mt_instruction(input_l), tokenize=False, add_generation_prompt=True
+                make_mt_instruction(input_l, llm_path=tokenizer.name_or_path), tokenize=False, add_generation_prompt=True
             )
             for input_l in input_lists
         ]
