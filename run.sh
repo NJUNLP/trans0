@@ -1,4 +1,4 @@
-WANDB_PROJECT="zouw_trans0" WANDB_NAME="llama3.1_deu2zho" torchrun --master_addr $METIS_WORKER_0_HOST --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT --node_rank $ARNOLD_ID --nnodes $ARNOLD_WORKER_NUM main.py \
+WANDB_PROJECT="trans0" WANDB_NAME="llama3.1_deu2zho" torchrun --master_addr $METIS_WORKER_0_HOST --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT --node_rank $ARNOLD_ID --nnodes $ARNOLD_WORKER_NUM main.py \
     --mode RL  --mcts_sample_size 5 \
     --llm_path models/huggingface/Llama-3.1-8b/  \
     --train_data_path dataset/flores200_dataset/sample_5k/ \
@@ -16,7 +16,7 @@ WANDB_PROJECT="zouw_trans0" WANDB_NAME="llama3.1_deu2zho" torchrun --master_addr
     --run_name 'llama3.1_deu2zho' \
     --bf16 True --tf32 True  2>&1 |tee contine.log
 
-WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.1_debug" torchrun --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT  main.py \
+WANDB_PROJECT="debug" WANDB_NAME="llama3.1_debug" torchrun --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT  main.py \
     --mode RL  --mcts_sample_size 5 \
     --llm_path models/huggingface/Llama-3.1-8b/  \
     --train_data_path dataset/flores200_dataset/sample_5k/ \
@@ -34,7 +34,7 @@ WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.1_debug" torchrun --nproc_per_node
     --report_to 'wandb' \
     --bf16 True --tf32 True 2>&1 |tee contine.log
 
-WANDB_PROJECT="zouw_debug" WANDB_NAME="qwen_baseline" torchrun --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT  main.py \
+WANDB_PROJECT="debug" WANDB_NAME="qwen_baseline" torchrun --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT  main.py \
     --mode SFT  \
     --llm_path models/huggingface/Qwen2.5-7B/  \
     --train_data_path dataset/flores200_dataset/sample_5k/ \
@@ -64,26 +64,12 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python3 main.py \
     --cache_dir cache/llama3.2_debug/  \
     --deepspeed configs/ds_z2_config.json \
     --nas_base_path  /mnt/bn/v2024/ \
-    --tf32 True --bf16 True    
+    --tf32 True --bf16 True
 
 CUDA_VISIBLE_DEVICES="0,1" python3 main.py \
     --mode air \
     --output_dir /mnt/bn/v2024/ckpts/baselines/llama3.1_sft \
     --bf16 True --tf32 True
-
-WANDB_PROJECT="zouw_debug" WANDB_NAME="llama3.1_debug_RL" torchrun --nproc_per_node $ARNOLD_WORKER_GPU --master_port $METIS_WORKER_0_PORT  main.py \
-    --mode debug_RL \
-    --src_code deu_Latn --trg_code zho_Hans \
-    --nas_base_path /mnt/bn/v2024/  \
-    --cache_dir cache/llama3.1_debug/ \
-    --output_dir /mnt/bn/v2024/ckpts/llama3.1_debug/ \
-    --deepspeed configs/ds_z2_config.json \
-    --rl_loss_type sppo_hard \
-    --learning_rate 1e-3 \
-    --rl_learning_rate 1e-6 \
-    --run_name 'llama3.1_debug_RL' \
-    --report_to 'wandb' \
-    --bf16 True --tf32 True 2>&1 |tee contine.log
 
 CUDA_VISIBLE_DEVICES="0" torchrun --nproc_per_node=1 --master_port=8008 main.py \
     --mode simulate --mcts_sample_size 5 \

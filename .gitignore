@@ -19,6 +19,7 @@ reproduce.py
 temp*
 tmp*
 
+huawei_launch.sh
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
