@@ -121,7 +121,7 @@ CUDA_VISIBLE_DEVICES="0" torchrun --nproc_per_node=1 --master_port=8008 main.py 
     --bf16 True --tf32 True 2>&1 |tee mc_tree.log
 ```
 
-valid++ (Note: test with G-MCTS can expensive and time-consuming, which is not recommended)
+valid++ (Note: test via G-MCTS is expensive and time-consuming, which is not recommended)
 valid++ will extract the flores200 given all self_play_languages for specific validation.
 ```
 torchrun --nproc_per_node $NUM_WORKER_GPU --master_port $WORKER_0_PORT  main.py  \
