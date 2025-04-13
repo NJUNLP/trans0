@@ -45,17 +45,14 @@ def unit_test(args):
     input_line = "If you always harm others, the chickens gonna come home to roost."  # eng_Latn
     # input_line = "Putins Verrücktes Spiel"  # deu_Latn
     # input_line="التحدي الجديد لمنتدى دافوس" # arb_Arab
-    #input_line = "羯鼓弄伊凉，露花石火光。山馀绣领字，云染碧螺香。芍药留妃子，鹦哥说上皇。难将脂粉水，傲我白云乡。"  # zho_Hans
+    # input_line = "羯鼓弄伊凉，露花石火光。山馀绣领字，云染碧螺香。芍药留妃子，鹦哥说上皇。难将脂粉水，傲我白云乡。"  # zho_Hans
     # input_line = "你牛逼，真有两把刷子！"
     # input_line="Syriza stand einst für eine Abkehr vom Euro"  # deu_Latn
-    input_line = "于北辰：无人机也是鸡，我撒一把米，它就去吃米了。我台湾省有3.5代飞机，我两架绑一起，就是7代机，吊打目前全球所有五代机。抓我？谁都抓不到我，你来抓我的时候我去厕所，你敲门我说有人，你怎么抓我？"
-    input_line = "你的算盘珠子打的湖南都听到了响声！"
-    input_line = "张天师闪现·小明怎么不交净化！"
     agent = TransAgent(args)
     mc_tree = agent.MCTS(
         src_sent=input_line,
-        src_lang_code="zho_Hans",
-        trg_lang_code="eng_Latn",
+        src_lang_code="eng_Latn",
+        trg_lang_code="zho_Hans",
         max_simulation_depth=2,
     )
     item_list = mc_tree.layer_traversal(value_type="utility")

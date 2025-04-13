@@ -10,7 +10,7 @@ WANDB_PROJECT="trans0" WANDB_NAME="llama3.1_deu2zho" torchrun --master_addr $MET
     --output_dir /mnt/bn/v2024/ckpts/llama3.1_trans0/ \
     --deepspeed configs/ds_z2_config.json \
     --rl_loss_type sppo_hard \
-    --learning_rate 1e-3 \
+    --learning_rate 1e-4 \
     --rl_learning_rate 1e-6 \
     --report_to 'wandb' \
     --run_name 'llama3.1_deu2zho' \

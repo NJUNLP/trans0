@@ -202,7 +202,7 @@ def clense_data_line(data_path, output_path):
 
 def process_hin_data(data_path):
     df = pd.read_json(data_path)["paragraphs"]
-    all_data = sum(df, []) 
+    all_data = sum(df, [])
     # language code detector
     cleaned_data =[]
     lan_detector = LanguageDetectorBuilder.from_all_languages().build()
