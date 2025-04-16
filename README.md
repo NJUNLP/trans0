@@ -135,5 +135,5 @@ torchrun --nproc_per_node $NUM_WORKER_GPU --master_port $WORKER_0_PORT  main.py 
 
 
 ## Acknowledgement
-Trans0 was supported by ByteLab (ByteDance Inc).
+Trans0 was supported by ByteDance Research (ByteDance Inc).
 Trans0 are also funded by the National Science Foundation of China (No. 62376116, 62176120), research project of Nanjing University-China Mobile Joint Institute, and the Fundamental Research Funds for the Central Universities (No. 2024300507)
